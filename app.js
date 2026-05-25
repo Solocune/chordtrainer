@@ -176,17 +176,25 @@ const Storage = (() => {
     },
     exportData() {
       return JSON.stringify({
-        version: '1.3', exportDate: new Date().toISOString(),
+        version: '1.4', exportDate: new Date().toISOString(),
         wordStats: api.getAllWordStats(), wordSets: api.getWordSets(),
         sessions: api.getSessions(), settings: api.getSettings(),
+        totalPracticeMs: api.getTotalPracticeMs(),
       }, null, 2);
     },
-    importData(json) {
+    importData(json, options = {}) {
       const d = JSON.parse(json);
       if (d.wordStats) save(K.STATS,    d.wordStats);
       if (d.wordSets)  save(K.SETS,     d.wordSets);
       if (d.sessions)  save(K.SESSIONS, d.sessions);
       if (d.settings)  save(K.SETTINGS, d.settings);
+      const importedPracticeMs = d.totalPracticeMs ?? d.practiceMs;
+      if (typeof importedPracticeMs === 'number' && importedPracticeMs > 0) {
+        const mode = options.practiceTimeMode ?? 'keep'; // 'overwrite' | 'aggregate' | 'keep'
+        const cur = load(K.PRACTICE_MS, 0);
+        if (mode === 'overwrite') save(K.PRACTICE_MS, importedPracticeMs);
+        else if (mode === 'aggregate') save(K.PRACTICE_MS, cur + importedPracticeMs);
+      }
     },
   };
   return api;
@@ -1295,6 +1303,7 @@ const App = (() => {
 
     const quality=Adaptive.calcQuality(hadRetry,chordTime,settings);
     Storage.updateWordResult(target,{correct:true,hadRetry,delay,chordTime:chordTime>0?chordTime:null,quality});
+    Storage.addPracticeMs(chordTime>0?chordTime:0);
 
     markTestWord(TS.idx,!hadRetry);
     clearHintTimer(TS);
@@ -1942,7 +1951,21 @@ const App = (() => {
     $('importFileInput').addEventListener('change',e=>{
       const file=e.target.files[0];if(!file)return;
       const r=new FileReader();
-      r.onload=ev=>{try{Storage.importData(ev.target.result);alert('Import successful! Reloading.');location.reload();}catch{alert('Import failed.');}};
+      r.onload=ev=>{
+        try{
+          const choice=(prompt(
+            'How should total practice time be imported?\n\n'
+            + '1 = Overwrite current total with backup\n'
+            + '2 = Aggregate (add backup + current)\n'
+            + '3 = Keep current total (ignore backup total)\n\n'
+            + 'Enter 1, 2, or 3 (default: 3).',
+            '3'
+          )||'3').trim();
+          const practiceTimeMode=choice==='1'?'overwrite':choice==='2'?'aggregate':'keep';
+          Storage.importData(ev.target.result,{practiceTimeMode});
+          alert('Import successful! Reloading.');location.reload();
+        }catch{alert('Import failed.');}
+      };
       r.readAsText(file);e.target.value='';
     });
     $('resetAllBtn').addEventListener('click',()=>
