@@ -207,10 +207,18 @@ const Adaptive = (() => {
   return {
     getNextWord(words, mode, lastWord, settings) {
       if (!words?.length) return null;
-      const pool = words.length > 1 ? words.filter(w => w !== lastWord) : [...words];
+      let pool = words.length > 1 ? words.filter(w => w !== lastWord) : [...words];
       const all  = Storage.getAllWordStats();
       const now  = Date.now();
       const t    = settings.slowChordTimeThreshold ?? 3000;
+      if (mode === 'adaptive') {
+        const duePool = pool.filter(word => {
+          const s = all[word];
+          return !s || s.attempts === 0 || (s.due ?? now) <= now;
+        });
+        // In adaptive mode, never pull future-due words while due words exist.
+        if (duePool.length) pool = duePool;
+      }
       const scored = pool.map(word => {
         const s = all[word];
         let score = 1;
