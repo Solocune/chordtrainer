@@ -581,9 +581,23 @@ function fmtRelative(ts){
 }
 function fmtDue(ts){
   if(!ts)return'—';
-  if(ts<=Date.now())return'<span style="color:var(--err)">Overdue</span>';
-  const d=Math.floor((ts-Date.now())/86400000);
-  if(d===0)return'Today';if(d===1)return'Tomorrow';return`in ${d}d`;
+  if(ts<=Date.now())return'<span style="color:var(--ok)">Now</span>';
+  const delta=ts-Date.now();
+  const MIN=60000;
+  const HOUR=60*MIN;
+  const DAY=24*HOUR;
+
+  if(delta<MIN)return'in 1 min';
+  if(delta<1*HOUR){
+    const mins=Math.ceil(delta/MIN);
+    return`in ${mins} min`;
+  }
+  if(delta<1*DAY){
+    const hrs=Math.ceil(delta/HOUR);
+    return`in ${hrs}h`;
+  }
+  const days=Math.ceil(delta/DAY);
+  return`in ${days}d`;
 }
 function escHtml(str){
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -1994,7 +2008,16 @@ const App = (() => {
     refreshPracticeHeader();
     refreshTestHeader();
     if(Storage.isFirstVisit())openHelp();
-    if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    if('serviceWorker' in navigator){
+      const host=window.location.hostname;
+      const isLocal=host==='localhost'||host==='127.0.0.1'||host==='::1';
+      if(isLocal){
+        navigator.serviceWorker.getRegistrations().then(regs=>regs.forEach(r=>r.unregister()));
+        if('caches' in window)caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k))));
+      }else{
+        navigator.serviceWorker.register('./sw.js').catch(()=>{});
+      }
+    }
   }
 
   return{init,switchTab,openHelp,closeHelp};

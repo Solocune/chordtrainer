@@ -1,5 +1,5 @@
 /* ChordTrainer Service Worker — enables offline use */
-const CACHE = 'chordtrainer-v5';
+const CACHE = 'chordtrainer-v6';
 const ASSETS = [
   './',
   './index.html',
@@ -29,17 +29,45 @@ self.addEventListener('fetch', e => {
   // Only intercept GET requests
   if (e.request.method !== 'GET') return;
 
-  e.respondWith(
-    caches.match(e.request).then(cached => {
-      if (cached) return cached;
-      return fetch(e.request).then(resp => {
-        // Cache successful same-origin and CDN responses
+  const url = new URL(e.request.url);
+  const sameOrigin = url.origin === self.location.origin;
+  const isAppShell = sameOrigin && (
+    e.request.mode === 'navigate' ||
+    e.request.destination === 'script' ||
+    e.request.destination === 'style'
+  );
+
+  if (isAppShell) {
+    // Network-first for HTML/JS/CSS prevents stale app code after deploy.
+    e.respondWith(
+      fetch(e.request).then(resp => {
         if (resp.ok) {
           const clone = resp.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
         return resp;
-      }).catch(() => cached); // fallback to cache on network error
+      }).catch(() =>
+        caches.match(e.request).then(cached => {
+          if (cached) return cached;
+          if (e.request.mode === 'navigate') return caches.match('./index.html');
+          return new Response('Offline', { status: 503, statusText: 'Offline' });
+        })
+      )
+    );
+    return;
+  }
+
+  // Cache-first for other assets for fast repeat loads.
+  e.respondWith(
+    caches.match(e.request).then(cached => {
+      if (cached) return cached;
+      return fetch(e.request).then(resp => {
+        if (resp.ok) {
+          const clone = resp.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+        }
+        return resp;
+      });
     })
   );
 });
