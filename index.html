@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ChordTrainer by Solocune</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>⌨</text></svg>">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ───────────────── HEADER ───────────────── -->
+<header class="app-header">
+  <div class="header-inner">
+    <div class="app-brand">
+      <span class="app-icon">⌨</span>
+      <span class="app-title">ChordTrainer <span class="app-sub">by Solocune</span></span>
+    </div>
+    <div class="header-actions">
+      <button id="helpBtn" class="btn btn-secondary btn-small" title="Help &amp; How it works">? Help</button>
+      <button id="themeToggle" class="icon-btn" title="Toggle theme">☀</button>
+    </div>
+  </div>
+</header>
+
+<!-- ───────────────── TABS ───────────────── -->
+<nav class="tab-bar">
+  <div class="tab-bar-inner">
+    <button class="tab-btn active" data-tab="practice">Practice</button>
+    <button class="tab-btn" data-tab="test">Test</button>
+    <button class="tab-btn" data-tab="stats">Statistics</button>
+    <button class="tab-btn" data-tab="wordsets">Word Sets</button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ═══════════════════════════════════════════
+     PRACTICE TAB
+     ═══════════════════════════════════════════ -->
+<section id="tab-practice" class="tab-content active">
+  <div class="tab-inner">
+    <h2 class="section-title">Practice</h2>
+    <p class="tab-intro">Adaptive chord training using spaced repetition. A word appears — chord it on your device. The trainer ignores the intermediate characters from chord detection and only checks the final output. Words you struggle with appear more often; mastered words are spaced out. Choose a mode to focus on accuracy, speed, or let the algorithm decide. If you go AFK for more than 5 s, the attempt is automatically excluded from statistics.</p>
+
+    <div id="noWordSetMsg" class="empty-state hidden">
+      <div class="empty-icon">📝</div>
+      <h3>No active word set</h3>
+      <p>You need a word set to start practicing. Load the built-in English sets or create your own in <strong>Word Sets</strong>.</p>
+      <div class="btn-row" style="justify-content:center;margin-top:.5rem">
+        <button class="btn btn-primary" onclick="App.switchTab('wordsets')">Go to Word Sets</button>
+      </div>
+    </div>
+
+    <!-- ── Finished state ── -->
+    <div id="practiceFinished" class="hidden">
+      <div class="finished-card">
+        <div class="finished-icon">🎉</div>
+        <h2>All caught up!</h2>
+        <p>You've reviewed all due words in this session.<br>New reviews will be scheduled when words are due again.</p>
+        <div class="finished-actions">
+          <button id="continueTrainingBtn" class="btn btn-primary">Continue Practicing (random)</button>
+          <button id="trainSlowestWordsBtn" class="btn btn-secondary">Train Slowest Words</button>
+          <button id="goToWordSetsBtn" class="btn btn-secondary">Add More Words</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Main practice area ── -->
+    <div id="practiceContent">
+      <div class="practice-meta">
+        <span class="label">Active set:</span>
+        <strong id="practiceActiveSetName">None</strong>
+        <span id="practiceWordCount" class="text-muted"></span>
+      </div>
+
+      <!-- Mode selector -->
+      <div class="control-row">
+        <label class="label">Mode:</label>
+        <div id="practiceModeBtns" class="btn-group mode-btns">
+          <button class="mode-btn active" data-mode="adaptive" title="SM-2 spaced repetition — focuses on due and weak words">Adaptive</button>
+          <button class="mode-btn" data-mode="wrong" title="Words you chord wrong most often appear more frequently">Wrong</button>
+          <button class="mode-btn" data-mode="slow" title="Words where your chord reaction time is highest">Slow</button>
+          <button class="mode-btn" data-mode="random" title="Equal probability for all words">Random</button>
+        </div>
+      </div>
+
+      <!-- Streak / session bar -->
+      <div class="streak-bar" title="Session X/Y = correct/total attempts this session. Accuracy = correct ÷ total.">
+        <div class="streak-item">
+          <span class="streak-label">Streak</span>
+          <span id="streakCount" class="streak-value">0</span>
+        </div>
+        <div class="streak-divider"></div>
+        <div class="streak-item" title="Correct first-try chords / all attempts this session">
+          <span class="streak-label">Session</span>
+          <span><span id="sessionCorrect">0</span>/<span id="sessionTotal">0</span> <span id="sessionAccuracy" class="text-muted"></span></span>
+        </div>
+      </div>
+
+      <!-- Word display -->
+      <div class="word-area">
+        <div id="practiceHint" class="hint-area hidden"></div>
+        <div id="wordDisplay" class="word-display">—</div>
+        <div id="practiceChordDisplay" class="chord-display"></div>
+        <input id="practiceInput" class="word-input" type="text" autocomplete="off"
+               autocorrect="off" autocapitalize="off" spellcheck="false"
+               placeholder="← Click here first, then chord the word" aria-label="Practice input">
+        <div class="input-hint">Click inside the box to focus it, then chord — press <kbd>Esc</kbd> or Skip to skip</div>
+      </div>
+
+      <!-- Skip button -->
+      <div class="action-row">
+        <button id="skipBtn" class="btn btn-secondary">Skip word</button>
+      </div>
+
+      <!-- Per-word result -->
+      <div id="wordResult" class="result-card hidden">
+        <div class="result-grid">
+          <div class="result-item">
+            <span class="result-label" title="Time from word appearing to your first keystroke — your chord recognition/recall delay">Delay</span>
+            <span id="resultDelay" class="result-value">—</span>
+          </div>
+          <div class="result-item">
+            <span class="result-label" title="Total time from word appearing to correct chord output, minus pauses. This is your end-to-end chord reaction time.">Chord Time</span>
+            <span id="resultChordTime" class="result-value">—</span>
+          </div>
+          <div class="result-item">
+            <span class="result-label" title="Did you need to correct or retry before getting it right?">Correction</span>
+            <span id="resultCorrection" class="result-value">—</span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Total attempts</span>
+            <span id="resultAttempts" class="result-value">—</span>
+          </div>
+        </div>
+      </div>
+    </div><!-- /practiceContent -->
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════
+     TEST TAB
+     ═══════════════════════════════════════════ -->
+<section id="tab-test" class="tab-content">
+  <div class="tab-inner">
+
+    <!-- Setup -->
+    <div id="testSetup">
+      <h2 class="section-title">Speed Test</h2>
+      <p class="tab-intro">Measure your chord speed over a block of words. All words are shown at once so you can read ahead. Chord each word and press <kbd>Space</kbd> to confirm it. If the word doesn’t match, you stay on it — a hint appears and you can backspace and retry. Use <kbd>Backspace</kbd> or <kbd>Ctrl+Backspace</kbd> to correct before confirming. Results show per-word WPM, chord time, and first-try accuracy. Press <kbd>Enter</kbd> on the results screen to instantly restart with the same settings.</p>
+
+      <div class="form-row">
+        <label for="testWordCount">Words per test:</label>
+        <input id="testWordCount" type="number" min="1" max="500" value="20" class="input-small">
+      </div>
+
+      <div class="control-row">
+        <label class="label">Word pool:</label>
+        <div id="testSourceBtns" class="btn-group mode-btns">
+          <button class="mode-btn active" data-source="all">All</button>
+          <button class="mode-btn" data-source="due"   title="Only words due for review">Due</button>
+          <button class="mode-btn" data-source="slow"  title="Words with above-threshold chord time">Slow</button>
+          <button class="mode-btn" data-source="wrong" title="Words with &lt;70% first-try accuracy">Wrong</button>
+        </div>
+      </div>
+
+      <div class="test-meta-row">
+        <span class="label">Active set:</span>
+        <strong id="testActiveSetName">None</strong>
+      </div>
+
+      <button id="startTestBtn" class="btn btn-primary btn-large">Start Test</button>
+    </div>
+
+    <!-- Running -->
+    <div id="testRunning" class="hidden">
+      <div class="test-progress-bar">
+        <div id="testProgressFill" class="test-progress-fill" style="width:0%"></div>
+      </div>
+      <div class="test-counter">Word <span id="testCurrent">1</span> / <span id="testTotal">—</span></div>
+
+      <div id="testHint" class="hint-area hidden"></div>
+      <div id="testChordDisplay" class="chord-display"></div>
+
+      <!-- All words shown as a readable block -->
+      <div id="testWordBlock" class="test-word-block" aria-label="Test words"></div>
+
+      <input id="testInput" class="word-input" type="text" autocomplete="off"
+             autocorrect="off" autocapitalize="off" spellcheck="false"
+             placeholder="Chord each word, then press Space to confirm…" aria-label="Test input">
+      <div class="input-hint" style="text-align:center">Press <kbd>Space</kbd> to confirm each word</div>
+
+      <button id="abortTestBtn" class="btn btn-secondary" style="margin-top:.75rem">Abort</button>
+    </div>
+
+    <!-- Results -->
+    <div id="testResults" class="hidden">
+      <h2 class="section-title">Test Results</h2>
+      <div class="summary-grid">
+        <div class="summary-card"><div class="summary-val" id="summaryWpm">—</div><div class="summary-label">WPM</div></div>
+        <div class="summary-card"><div class="summary-val" id="summaryAccuracy">—</div>
+          <div class="summary-label" title="Percentage of words chorded correctly on the first attempt (no backspace, no wrong space press)">First try %</div>
+        </div>
+        <div class="summary-card"><div class="summary-val" id="summaryWords">—</div><div class="summary-label">Words</div></div>
+        <div class="summary-card"><div class="summary-val" id="summaryTime">—</div><div class="summary-label">Duration</div></div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Word</th><th>Result</th>
+              <th title="Words per minute from previous confirmation to this one — includes the gap between chords">WPM (inter)</th>
+              <th title="Total time from word display to correct chord output, minus any pauses">Chord Time</th>
+              <th title="Time from word display to your first keystroke — chord recall delay">Delay (ms)</th>
+            </tr>
+          </thead>
+          <tbody id="testResultsBody"></tbody>
+        </table>
+      </div>
+
+      <button id="newTestBtn" class="btn btn-primary" style="margin-top:1rem">New Test</button>
+      <p class="input-hint" style="text-align:center;margin-top:.4rem">Tip: press <kbd>Enter</kbd> to start a new test with the same settings</p>
+
+      <!-- Per-word WPM chart -->
+      <div class="chart-section" style="margin-top:1.5rem">
+        <h3>WPM over time</h3>
+        <div class="chart-wrap" style="height:220px"><canvas id="testWpmCanvas"></canvas></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════
+     STATISTICS TAB
+     ═══════════════════════════════════════════ -->
+<section id="tab-stats" class="tab-content">
+  <div class="tab-inner">
+    <h2 class="section-title">Statistics</h2>
+    <p class="tab-intro">Overview of your training progress. The WPM chart shows test session history. The per-word table tracks accuracy, chord time, and next review date for every word you've practiced. Click any word row to expand sparkline graphs of its history. Sort or search to find weak spots.</p>
+
+    <!-- Overview cards -->
+    <div class="overview-grid">
+      <div class="ov-card">
+        <div class="ov-val" id="statsTotalWords">—</div>
+        <div class="ov-label">Words tracked</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-val" id="statsOverallAccuracy">—</div>
+        <div class="ov-label" title="First-try correct / total attempts across all words">Overall accuracy</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-val" id="statsAvgChordTime">—</div>
+        <div class="ov-label" title="Average total chord reaction time across all words">Avg chord time</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-val" id="statsTotalSessions">—</div>
+        <div class="ov-label">Test sessions</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-val" id="statsTotalPractice">—</div>
+        <div class="ov-label" title="Total active practice time (AFK periods excluded)">Practice time</div>
+      </div>
+    </div>
+
+    <!-- WPM chart -->
+    <div class="chart-section">
+      <h3>WPM over time</h3>
+      <div class="chart-wrap"><canvas id="wpmChart"></canvas></div>
+      <p id="noChartMsg" style="display:none;color:var(--txt2);text-align:center">No test sessions yet.</p>
+    </div>
+
+    <!-- Word stats table -->
+    <div class="section-header-row">
+      <h3>Per-word stats</h3>
+      <div class="table-controls">
+        <input id="wordStatsSearch" type="search" placeholder="Search words…" class="input-small">
+        <select id="wordStatsSort" class="input-small">
+          <option value="word">A–Z</option>
+          <option value="accuracy_asc">Accuracy (low first)</option>
+          <option value="chordtime_desc">Chord time (slow first)</option>
+          <option value="attempts">Most attempts</option>
+          <option value="due">Review due</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-bottom:.5rem">
+      <button id="resetSelectedBtn" class="btn btn-danger btn-small" disabled>Reset selected</button>
+      <label style="margin-left:.5rem;font-size:.85rem">
+        <input type="checkbox" id="selectAllWords"> Select all visible
+      </label>
+    </div>
+
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th style="width:2rem"></th>
+            <th>Word</th>
+            <th title="How many times you've attempted this word">Attempts</th>
+            <th title="Correct on first try (no backspace / wrong word) ÷ total attempts">Accuracy</th>
+            <th title="Average total chord reaction time (word appears → correct output, excluding pauses)">Avg Chord Time</th>
+            <th title="Average time from word appearing to your first keystroke">Avg Delay</th>
+            <th title="When this word is next scheduled for review (SM-2 spaced repetition)">Next Review</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="wordStatsBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Session history -->
+    <h3 style="margin-top:2rem">Session history</h3>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Date</th><th>Words</th><th>WPM</th><th>Accuracy</th><th>Duration</th><th>Pool</th></tr>
+        </thead>
+        <tbody id="sessionHistoryBody"></tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════
+     WORD SETS TAB
+     ═══════════════════════════════════════════ -->
+<section id="tab-wordsets" class="tab-content">
+  <div class="tab-inner">
+    <div class="section-header-row">
+      <div>
+        <h2 class="section-title">Word Sets</h2>
+        <p class="tab-intro">Word sets are the list of chords you want to train. Create custom sets by pasting words, generate a set automatically from your CharaChorder's chord map, or load the built-in English word lists to get started quickly. Only one set is active at a time.</p>
+      </div>
+      <div class="btn-row" style="align-self:flex-start">
+        <button id="loadDefaultSetsBtn" class="btn btn-secondary btn-small" title="Load the built-in English Top 200 and Top 1000 word sets">+ English Sets</button>
+        <button id="importFromChordMapBtn" class="btn btn-secondary btn-small" title="Create a word set from all chord outputs loaded in your chord map">Import from Chord Map</button>
+        <button id="newWordSetBtn" class="btn btn-primary">+ New Set</button>
+      </div>
+    </div>
+    <div id="wordSetsList"></div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════
+     SETTINGS TAB
+     ═══════════════════════════════════════════ -->
+<section id="tab-settings" class="tab-content">
+  <div class="tab-inner">
+    <h2 class="section-title">Settings</h2>
+    <p class="tab-intro">Tune thresholds, hint behavior, and appearance. Connect your CharaChorder here to enable chord key hints in practice and test modes. Export your progress as a JSON backup, or import a backup on a new device.</p>
+
+    <!-- General -->
+    <div class="settings-section">
+      <h3>General</h3>
+      <div class="settings-grid">
+        <label class="setting-label" title="Chord times above this threshold (ms) are considered 'slow' for adaptive mode and the Slow practice mode">Slow threshold (ms)</label>
+        <input id="settingSlowChordTime" type="number" min="200" max="30000" step="100" class="input-small">
+
+        <label class="setting-label" title="Delay in ms before advancing to next word after a correct chord">Auto-advance delay (ms)</label>
+        <input id="settingAutoAdvanceDelay" type="number" min="0" max="3000" step="50" class="input-small">
+
+        <label class="setting-label" title="Treat uppercase and lowercase as the same">Case insensitive</label>
+        <input id="settingCaseInsensitive" type="checkbox">
+      </div>
+    </div>
+
+    <!-- Spaced Repetition Tuning -->
+    <div class="settings-section">
+      <h3>Spaced Repetition Tuning</h3>
+      <p class="setting-desc">Fine-tune how the SM-2 algorithm schedules reviews. Lower the max interval or ease factor to see words more often. Use the action buttons to bring overdue content forward.</p>
+      <div class="settings-grid">
+        <label class="setting-label" title="Cap the maximum review interval in days — prevents words from disappearing for too long">Max interval (days)</label>
+        <input id="settingMaxIntervalDays" type="number" min="1" max="3650" value="365" class="input-small">
+
+        <label class="setting-label" title="Starting ease factor for new words (higher = interval grows faster; lower = more frequent reviews)">Initial ease factor</label>
+        <input id="settingEaseFactorDefault" type="number" min="1.3" max="4.0" step="0.1" value="2.5" class="input-small">
+      </div>
+      <div class="btn-row" style="margin-top:.75rem;flex-wrap:wrap;gap:.5rem">
+        <button id="bringAllDueBtn" class="btn btn-secondary btn-small" title="Mark every word as due right now so they all appear in Adaptive practice">Set all words due now</button>
+        <div style="display:flex;align-items:center;gap:.4rem">
+          <label class="setting-label" style="margin:0" for="bringForwardDaysInput">Bring forward by</label>
+          <input id="bringForwardDaysInput" type="number" min="1" max="3650" value="1" class="input-small" style="width:4.5rem">
+          <span class="setting-label" style="margin:0">day(s)</span>
+          <button id="bringForwardBtn" class="btn btn-secondary btn-small">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Theme -->
+    <div class="settings-section">
+      <h3>Theme</h3>
+      <div class="btn-group mode-btns">
+        <button id="themeDarkBtn"  class="mode-btn active">🌙 Dark</button>
+        <button id="themeLightBtn" class="mode-btn">☀ Light</button>
+      </div>
+    </div>
+
+    <!-- Chord hints -->
+    <div class="settings-section">
+      <h3>Chord Hints</h3>
+      <p class="setting-desc">When to show a visual chord hint (requires a chord map — see CharaChorder below). <strong>On wrong chord</strong> and <strong>After delay</strong> can be combined — select both to trigger hints from either condition. <strong>Never</strong> and <strong>Always</strong> are exclusive.</p>
+      <div id="hintModeBtns" class="btn-group mode-btns">
+        <button class="mode-btn" data-hint="never">Never</button>
+        <button class="mode-btn" data-hint="wrong">On wrong chord</button>
+        <button class="mode-btn active" data-hint="always">Always</button>
+        <button class="mode-btn" data-hint="delay">After delay</button>
+      </div>
+      <div id="hintDelayRow" class="form-row" style="display:none;margin-top:.5rem">
+        <label class="setting-label" for="settingHintDelay">Show hint after (seconds)</label>
+        <input id="settingHintDelay" type="number" min="1" max="60" value="3" class="input-small">
+      </div>
+    </div>
+
+    <!-- CharaChorder -->
+    <div class="settings-section">
+      <h3>CharaChorder Integration</h3>
+      <p class="setting-desc">Load your chord map directly from a connected CharaChorder device or import a JSON chord export. This enables chord key hints during practice.</p>
+      <p class="setting-desc">📋 <strong>To get your JSON file:</strong> Visit <a href="https://charachorder.io/" target="_blank" rel="noopener">charachorder.io</a> → connect your device → go to <strong>Device</strong> → <strong>Backup</strong> → click <strong>Library</strong> to download the JSON. Then import it here.</p>
+      <div id="ccBrowserWarn" class="hidden">
+        <p class="setting-desc" style="color:var(--warn)">⚠ Web Serial requires <strong>Chrome or Edge</strong>. It works on <strong>GitHub Pages</strong> (<code>https://</code>) and <code>http://localhost</code> — but NOT when opening the HTML file directly (<code>file://</code>). For local testing, use <code>python3 -m http.server</code>.</p>
+      </div>
+      <div class="cc-status-row">
+        <span class="label">Status:</span>
+        <span id="ccStatus"><span class="badge badge-neutral">Not loaded</span></span>
+      </div>
+      <div class="cc-actions">
+        <button id="ccConnectBtn" class="btn btn-primary btn-small">Connect Device (Serial)</button>
+        <button id="ccImportBtn"  class="btn btn-secondary btn-small">Import JSON</button>
+        <button id="ccClearBtn"   class="btn btn-danger btn-small">Clear</button>
+        <input id="ccJsonInput" type="file" accept=".json" class="hidden">
+      </div>
+      <div id="ccConnectStatus" class="cc-status-msg hidden"></div>
+
+      <!-- Chord map inspector: appears once a chord map is loaded -->
+      <div id="chordMapInspector" class="hidden" style="margin-top:1rem;padding:.9rem 1rem;background:var(--bg3);border-radius:var(--radius);border:1px solid var(--border)">
+        <div style="font-weight:600;margin-bottom:.6rem;font-size:.9rem">Chord Map Inspector</div>
+        <div class="form-row" style="align-items:center;gap:.5rem">
+          <label style="white-space:nowrap">Look up word:</label>
+          <input id="chordLookupInput" type="text" class="input-small" placeholder="Type a word…" style="flex:1">
+          <button id="chordLookupBtn" class="btn btn-secondary btn-small">Show chord</button>
+        </div>
+        <div id="chordLookupResult" style="margin:.5rem 0;font-family:monospace;font-size:.9rem;min-height:1.4rem"></div>
+        <button id="showSampleBtn" class="btn btn-secondary btn-small">Show first 20 entries ▾</button>
+        <div id="chordSampleTable" class="hidden" style="margin-top:.5rem;overflow-x:auto"></div>
+      </div>
+    </div><!-- /CharaChorder settings-section -->
+
+    <!-- Data -->
+    <div class="settings-section">
+      <h3>Data</h3>
+      <div class="btn-row">
+        <button id="exportDataBtn" class="btn btn-secondary">Export backup</button>
+        <button id="importDataBtn" class="btn btn-secondary">Import backup</button>
+        <input id="importFileInput" type="file" accept=".json" class="hidden">
+        <button id="resetAllBtn" class="btn btn-danger">Reset all progress</button>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</main><!-- /main -->
+
+<!-- ═══════════════════════════════════════════
+     HELP MODAL
+     ═══════════════════════════════════════════ -->
+<div id="helpModal" class="modal-overlay hidden">
+  <div class="modal-backdrop" id="helpBackdrop"></div>
+  <div class="modal-content help-modal">
+    <div class="modal-header">
+      <h2>How ChordTrainer Works</h2>
+      <button id="helpClose" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="help-section">
+        <h3>🤔 What is chording?</h3>
+        <p>On a CharaChorder, you press several keys <em>simultaneously</em> and the device outputs a whole word at once. This trainer helps you learn those key combinations with spaced repetition.</p>
+      </div>
+
+      <div class="help-section">
+        <h3>🏋 Practice tab</h3>
+        <p>A word appears — chord it on your device. The trainer ignores intermediate characters the device types before the chord fires and corrects itself via backspace. Only the final output is judged.</p>
+        <ul>
+          <li><strong>Adaptive</strong> — uses SM-2 spaced repetition. Words you struggle with appear more often; mastered words come back just often enough to confirm they're still known.</li>
+          <li><strong>Wrong</strong> — focuses on your lowest-accuracy words.</li>
+          <li><strong>Slow</strong> — focuses on words with the highest chord reaction time.</li>
+          <li><strong>Random</strong> — equal probability for all words.</li>
+        </ul>
+        <p><strong>Session X/Y (Accuracy%)</strong> — X = words chorded correctly on the first attempt this session, Y = total attempts. Accuracy = X÷Y. When you backspace and retry, it counts as an attempt but not a correct first-try.</p>
+        <p><strong>Streak</strong> — consecutive words chorded correctly without any correction.</p>
+        <p><strong>AFK detection:</strong> If you're away from the keyboard for more than 5 seconds when a word is waiting, that attempt is excluded from statistics entirely — so stepping away won't distort your accuracy or chord-time scores. The word still advances normally when you return and chord it.</p>
+        <p>When all words in Adaptive mode are scheduled for future review, you'll see a <em>Congratulations</em> screen. You can continue in Random mode or add more words.</p>
+      </div>
+
+      <div class="help-section">
+        <h3>⚡ Test tab</h3>
+        <p>All N words are shown as a block — read ahead as you chord. Chord each word, then press <kbd>Space</kbd> to confirm it. If the word doesn't match, you stay on the same word: a chord hint appears and the input is cleared so you can retry. Use <kbd>Backspace</kbd> or <kbd>Ctrl+Backspace</kbd> to correct a partially typed word before pressing <kbd>Space</kbd>. The test timer starts on your first keystroke (not when the test loads), so taking a moment before you begin doesn't count against your WPM.</p>
+        <ul>
+          <li><strong>WPM (inter)</strong> — words per minute from when the previous word was confirmed to when this one was. Counts the natural gap between chords.</li>
+          <li><strong>Chord Time</strong> — from your first keystroke on the word to correct confirmation (pauses &gt;5 s are excluded).</li>
+          <li><strong>Delay</strong> — time from word appearing to your first keystroke. Reflects chord recall time.</li>
+          <li><strong>First try %</strong> — percentage of words confirmed correctly on the first <kbd>Space</kbd> press, with no backspace used.</li>
+          <li><strong>✓ First try</strong> — correct on first attempt. <strong>⚠ Corrected</strong> — required a backspace or a second attempt after a wrong <kbd>Space</kbd> press.</li>
+        </ul>
+        <p>If you walk away mid-test, any gap &gt;5 s is not counted as typing time. A chart showing cumulative WPM over time is shown at the end. Press <kbd>Enter</kbd> on the results screen to instantly start a new test with the same settings.</p>
+      </div>
+
+      <div class="help-section">
+        <h3>📊 Statistics tab</h3>
+        <p>Click any word row to expand sparkline charts showing its chord time and delay history. Use the sort options to find your slowest or most error-prone words. Click <em>Reset</em> on a word to wipe its SM-2 progress (useful if you've reprogrammed a chord).</p>
+        <p><strong>Practice time</strong> — total active practice time accumulated in the Practice tab. AFK periods (idle &gt;5 s) are excluded so stepping away doesn't inflate the counter.</p>
+        <p><strong>Next Review</strong> — the SM-2 algorithm schedules each word for review after a growing interval (1 day → 6 days → longer). Overdue = the word is ready now.</p>
+      </div>
+
+      <div class="help-section">
+        <h3>⌨ Chord Hints</h3>
+        <p>If you connect your CharaChorder (or import a JSON chord map), the trainer can show you which keys to press for each word. The hint appears <strong>above the word</strong> so you can see it at a glance. In Settings, choose when to show hints:</p>
+        <ul>
+          <li><strong>Never</strong> — hints are hidden.</li>
+          <li><strong>On wrong chord</strong> — hint appears in practice mode as soon as you chord the wrong word; in test mode it appears when you press <kbd>Space</kbd> with an incorrect word (and you stay on that word until you get it right).</li>
+          <li><strong>Always</strong> — hint shown immediately when each word appears.</li>
+          <li><strong>After delay</strong> — hint appears automatically after N configurable seconds without typing. Useful when you're thinking. Resets whenever you press a key.</li>
+        </ul>
+        <p><strong>Important:</strong> any attempt where a hint was shown — whether triggered by a wrong chord or by the delay timer — is always counted as a correction (not a first-try correct). This keeps your accuracy honest.</p>
+        <p><strong>On wrong chord</strong> and <strong>After delay</strong> can be <em>combined</em> — click both buttons in Settings to enable both triggers simultaneously. <strong>Never</strong> and <strong>Always</strong> are exclusive and clear other selections.</p>
+        <p>Connect via <strong>Serial</strong> in Chrome/Edge. Web Serial works on <strong>GitHub Pages</strong> (<code>https://</code>) and <code>http://localhost</code> — but not when opening the file directly (<code>file://</code>). Or import a JSON chord map: go to <a href="https://charachorder.io/" target="_blank" rel="noopener">charachorder.io</a> → Device → Backup → Library.</p>
+      </div>
+
+      <div class="help-section">
+        <h3>⚙ Spaced Repetition Tuning</h3>
+        <p>In Settings you can tune how aggressively the SM-2 algorithm schedules reviews:</p>
+        <ul>
+          <li><strong>Max interval (days)</strong> — caps how long a word can go before being reviewed again. Default 365. Lower it (e.g. 30) to keep all words fresher.</li>
+          <li><strong>Initial ease factor</strong> — how fast intervals grow for new words. Default 2.5. Lower it for more frequent repetition.</li>
+          <li><strong>Set all words due now</strong> — immediately marks every word for review (useful after a break).</li>
+          <li><strong>Bring forward by N days</strong> — shifts every word's next review N days earlier, shortening current intervals.</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h3>📝 Word Sets</h3>
+        <p>Built-in English Top 200 and Top 1000 word sets are available — click <strong>+ English Sets</strong> in the Word Sets tab. You can also generate a word set automatically from your loaded chord map (one word per chord). Only one set is active at a time.</p>
+      </div>
+
+      <div class="help-section">
+        <h3>💡 Tips</h3>
+        <ul>
+          <li>Start with a small word set (20–50 words) and expand as you master them.</li>
+          <li>Use <em>Adaptive</em> mode daily — it handles scheduling for you.</li>
+          <li>Use <em>Slow</em> mode when you want to deliberately drill hesitant chords.</li>
+          <li>Export a backup regularly via <strong>Settings → Export backup</strong>.</li>
+        </ul>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button id="helpCloseBtn" class="btn btn-primary">Got it!</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     WORD SET MODAL
+     ═══════════════════════════════════════════ -->
+<div id="wordSetModal" class="modal-overlay hidden">
+  <div class="modal-backdrop" id="wordSetBackdrop"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="wordSetModalTitle">New Word Set</h2>
+      <button id="wordSetClose" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="wordSetName">Name</label>
+        <input id="wordSetName" type="text" class="input-full" placeholder="e.g. Top 200 English">
+      </div>
+      <div class="form-group">
+        <label>Separator</label>
+        <div id="separatorBtns" class="btn-group mode-btns">
+          <button class="mode-btn active" data-sep="auto">Auto</button>
+          <button class="mode-btn" data-sep=" ">Space</button>
+          <button class="mode-btn" data-sep=",">Comma</button>
+          <button class="mode-btn" data-sep="&#10;">Newline</button>
+          <button class="mode-btn" data-sep="&#9;">Tab</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="wordSetInput">Words <span id="wordSetCount" class="text-muted"></span></label>
+        <textarea id="wordSetInput" class="input-full textarea-words" rows="8"
+          placeholder="Paste your words here. Duplicates are removed automatically."></textarea>
+      </div>
+      <div class="form-group">
+        <label>Preview</label>
+        <div id="wordSetPreview" class="word-set-preview text-muted">—</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button id="wordSetCancelBtn" class="btn btn-secondary">Cancel</button>
+      <button id="saveWordSetBtn" class="btn btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     CONFIRM MODAL
+     ═══════════════════════════════════════════ -->
+<div id="confirmModal" class="modal-overlay hidden">
+  <div class="modal-content modal-small">
+    <div class="modal-header"><h2>Confirm</h2></div>
+    <div class="modal-body">
+      <p id="confirmMessage"></p>
+    </div>
+    <div class="modal-footer">
+      <button id="confirmCancel" class="btn btn-secondary">Cancel</button>
+      <button id="confirmOk" class="btn btn-danger">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
