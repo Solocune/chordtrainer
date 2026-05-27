@@ -371,6 +371,9 @@
         <label class="setting-label" title="Delay in ms before advancing to next word after a correct chord">Auto-advance delay (ms)</label>
         <input id="settingAutoAdvanceDelay" type="number" min="0" max="3000" step="50" class="input-small">
 
+        <label class="setting-label" title="How long a skipped word is postponed before it becomes due again">Skip delay (minutes)</label>
+        <input id="settingSkipDelay" type="number" min="0" max="1440" step="1" class="input-small">
+
         <label class="setting-label" title="Treat uppercase and lowercase as the same">Case insensitive</label>
         <input id="settingCaseInsensitive" type="checkbox">
       </div>
@@ -381,6 +384,12 @@
       <h3>Spaced Repetition Tuning</h3>
       <p class="setting-desc">Fine-tune how the SM-2 algorithm schedules reviews. Lower the max interval or ease factor to see words more often. Use the action buttons to bring overdue content forward.</p>
       <div class="settings-grid">
+        <label class="setting-label" title="Interval after the first fully remembered success (no hint/retry)">1st success interval (days)</label>
+        <input id="settingFirstSuccessInterval" type="number" min="1" max="3650" value="1" class="input-small">
+
+        <label class="setting-label" title="Interval after the second fully remembered success (no hint/retry)">2nd success interval (days)</label>
+        <input id="settingSecondSuccessInterval" type="number" min="1" max="3650" value="6" class="input-small">
+
         <label class="setting-label" title="Cap the maximum review interval in days — prevents words from disappearing for too long">Max interval (days)</label>
         <input id="settingMaxIntervalDays" type="number" min="1" max="3650" value="365" class="input-small">
 
@@ -522,7 +531,7 @@
         <h3>📊 Statistics tab</h3>
         <p>Click any word row to expand sparkline charts showing its chord time and delay history. Use the sort options to find your slowest or most error-prone words. Click <em>Reset</em> on a word to wipe its SM-2 progress (useful if you've reprogrammed a chord).</p>
         <p><strong>Practice time</strong> — total active practice time accumulated in the Practice tab. AFK periods (idle &gt;5 s) are excluded so stepping away doesn't inflate the counter.</p>
-        <p><strong>Next Review</strong> — the SM-2 algorithm schedules each word for review after a growing interval (1 day → 6 days → longer). Overdue = the word is ready now.</p>
+        <p><strong>Next Review</strong> — the SM-2 algorithm schedules each word for review after a growing interval (configurable early steps, then multiplicative growth). Overdue = the word is ready now.</p>
       </div>
 
       <div class="help-section">
@@ -543,6 +552,7 @@
         <h3>⚙ Spaced Repetition Tuning</h3>
         <p>In Settings you can tune how aggressively the SM-2 algorithm schedules reviews:</p>
         <ul>
+          <li><strong>1st / 2nd success interval</strong> — set the first two spacing steps after memory-only correct answers (defaults: 1 day, then 6 days). Lower these if the default ramp feels too steep.</li>
           <li><strong>Max interval (days)</strong> — caps how long a word can go before being reviewed again. Default 365. Lower it (e.g. 30) to keep all words fresher.</li>
           <li><strong>Initial ease factor</strong> — how fast intervals grow for new words. Default 2.5. Lower it for more frequent repetition.</li>
           <li><strong>Set all words due now</strong> — immediately marks every word for review (useful after a break).</li>

@@ -20,9 +20,12 @@ const Storage = (() => {
     caseInsensitive:        true,
     showWordStats:          true,
     autoAdvanceDelay:       600,
+    skipDelayMinutes:       5,
     theme:                  'dark',
     hintModes:              ['wrong','delay'],  // array; 'never'|'always' exclusive, 'wrong'+'delay' combinable
     hintDelaySeconds:       1,
+    firstSuccessIntervalDays:  1,
+    secondSuccessIntervalDays: 6,
     maxIntervalDays:        365,
     easeFactorDefault:      2.5,
   };
@@ -54,11 +57,13 @@ const Storage = (() => {
       const all = api.getAllWordStats();
       const now = Date.now();
       const s   = all[word] || api._initStat(word);
+      const settings = api.getSettings();
       s.lastSeen = now;
       if (result.skipped) {
         s.attempts++; s.skipped = (s.skipped || 0) + 1;
         s.repetitions = 0; s.interval = 1;
-        s.due = now + 5 * 60 * 1000;
+        const skipDelayMs = Math.max(0, (settings.skipDelayMinutes ?? 5)) * 60 * 1000;
+        s.due = now + skipDelayMs;
         all[word] = s; save(K.STATS, all); return;
       }
       s.attempts++;
@@ -70,14 +75,21 @@ const Storage = (() => {
       if (result.chordTime != null) s.chordTimeHistory = [...(s.chordTimeHistory || []).slice(-49), result.chordTime];
       const q = result.quality ?? 0;
       if (q >= 3) {
-        if      (s.repetitions === 0) s.interval = 1;
-        else if (s.repetitions === 1) s.interval = 6;
+        const firstDays = Math.max(1, settings.firstSuccessIntervalDays ?? 1);
+        const secondDays = Math.max(1, settings.secondSuccessIntervalDays ?? 6);
+        if      (s.repetitions === 0) s.interval = firstDays;
+        else if (s.repetitions === 1) s.interval = secondDays;
         else s.interval = Math.round(s.interval * s.easeFactor);
         s.repetitions++;
         s.easeFactor = Math.max(1.3, s.easeFactor + 0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
-      } else { s.repetitions = 0; s.interval = 1; }
-      s.interval = Math.min(s.interval, api.getSettings().maxIntervalDays ?? 365);
-      s.due = now + s.interval * 86400 * 1000;
+        s.interval = Math.min(s.interval, settings.maxIntervalDays ?? 365);
+        s.due = now + s.interval * 86400 * 1000;
+      } else {
+        // A corrected/hinted answer is not treated as memory success.
+        s.repetitions = 0;
+        s.interval = 1;
+        s.due = now;
+      }
       all[word] = s; save(K.STATS, all);
     },
 
@@ -1731,7 +1743,10 @@ const App = (() => {
     const s=Storage.getSettings();
     $('settingSlowChordTime').value=s.slowChordTimeThreshold??3000;
     $('settingAutoAdvanceDelay').value=s.autoAdvanceDelay??600;
+    $('settingSkipDelay').value=s.skipDelayMinutes??5;
     $('settingHintDelay').value=s.hintDelaySeconds??1;
+    $('settingFirstSuccessInterval').value=s.firstSuccessIntervalDays??1;
+    $('settingSecondSuccessInterval').value=s.secondSuccessIntervalDays??6;
     $('settingMaxIntervalDays').value=s.maxIntervalDays??365;
     $('settingEaseFactorDefault').value=s.easeFactorDefault??2.5;
     $('settingCaseInsensitive').checked=s.caseInsensitive;
@@ -1749,7 +1764,10 @@ const App = (() => {
     const s=Storage.getSettings();
     s.slowChordTimeThreshold=parseInt($('settingSlowChordTime').value)||3000;
     s.autoAdvanceDelay=parseInt($('settingAutoAdvanceDelay').value)||600;
+    s.skipDelayMinutes=Math.max(0, parseInt($('settingSkipDelay').value) || 0);
     s.hintDelaySeconds=parseInt($('settingHintDelay').value)||1;
+    s.firstSuccessIntervalDays=Math.max(1, parseInt($('settingFirstSuccessInterval').value) || 1);
+    s.secondSuccessIntervalDays=Math.max(1, parseInt($('settingSecondSuccessInterval').value) || 6);
     s.maxIntervalDays=parseInt($('settingMaxIntervalDays').value)||365;
     s.easeFactorDefault=parseFloat($('settingEaseFactorDefault').value)||2.5;
     s.caseInsensitive=$('settingCaseInsensitive').checked;
@@ -1902,7 +1920,8 @@ const App = (() => {
       }));
 
     // Settings
-    ['settingSlowChordTime','settingAutoAdvanceDelay','settingHintDelay',
+    ['settingSlowChordTime','settingAutoAdvanceDelay','settingSkipDelay','settingHintDelay',
+     'settingFirstSuccessInterval','settingSecondSuccessInterval',
      'settingMaxIntervalDays','settingEaseFactorDefault'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
     ['settingCaseInsensitive'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
     document.querySelectorAll('#hintModeBtns .mode-btn').forEach(b=>b.addEventListener('click',()=>setHintMode(b.dataset.hint)));
