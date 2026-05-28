@@ -758,7 +758,7 @@ const App = (() => {
     hintTimer:null,
   };
 
-  let wordSetEditId=null, wordSetSep='auto', confirmCb=null, wpmChart=null, testWpmChart=null;
+  let wordSetEditId=null, wordSetSep='auto', confirmCb=null, wpmChart=null, testWpmChart=null, dragSrcId=null;
   const $=id=>document.getElementById(id);
 
   function cmp(a,b){
@@ -1760,22 +1760,138 @@ const App = (() => {
     }
     list.innerHTML=sets.map(set=>{
       const isActive=activeIds.includes(set.id);
-      return`<div class="word-set-card ${isActive?'is-active':''}">
-        <div class="wsc-info">
-          <div class="wsc-name ${isActive?'is-active':''}">${escHtml(set.name)}</div>
-          <div class="wsc-meta">${set.words.length} word${set.words.length!==1?'s':''}</div>
-          <div class="wsc-preview">${escHtml(set.words.slice(0,12).join(' '))}${set.words.length>12?'…':''}</div>
-        </div>
-        <div class="wsc-actions">
-          <button class="btn ${isActive?'btn-primary':'btn-secondary'} btn-small set-toggle-btn" data-id="${set.id}">${isActive?'✓ Active':'Activate'}</button>
-          <button class="btn btn-secondary btn-small edit-set-btn" data-id="${set.id}">Edit</button>
-          <button class="btn btn-danger btn-small delete-set-btn" data-id="${set.id}">Delete</button>
+      const sep=set.sep??'auto';
+      const sepOpts=[['auto','Auto'],[' ','Space'],[',','Comma'],['\n','Newline'],['\t','Tab']];
+      return`<div class="word-set-card ${isActive?'is-active':''}" data-id="${set.id}" data-edit-sep="${escHtml(sep)}" draggable="true">
+        <div class="wsc-drag-handle" title="Drag to reorder">⠿</div>
+        <div class="wsc-body">
+          <div class="wsc-view">
+            <div class="wsc-info">
+              <div class="wsc-name ${isActive?'is-active':''}">${escHtml(set.name)}</div>
+              <div class="wsc-meta">${set.words.length} word${set.words.length!==1?'s':''}</div>
+              <div class="wsc-preview">${escHtml(set.words.slice(0,12).join(' '))}${set.words.length>12?'\u2026':''}</div>
+            </div>
+            <div class="wsc-actions">
+              <button class="btn ${isActive?'btn-primary':'btn-secondary'} btn-small set-toggle-btn" data-id="${set.id}">${isActive?'\u2713 Active':'Activate'}</button>
+              <button class="btn btn-secondary btn-small edit-set-btn" data-id="${set.id}">Edit</button>
+              <button class="btn btn-danger btn-small delete-set-btn" data-id="${set.id}">Delete</button>
+            </div>
+          </div>
+          <div class="wsc-edit">
+            <div class="wsc-edit-inner">
+              <div class="form-group" style="margin-top:.75rem">
+                <label>Name</label>
+                <input class="wsc-edit-name input-full" type="text" value="${escHtml(set.name)}">
+              </div>
+              <div class="form-group">
+                <label>Separator</label>
+                <div class="wsc-sep-btns btn-group mode-btns">${sepOpts.map(([v,l])=>`<button class="mode-btn${sep===v?' active':''}" data-sep="${escHtml(v)}">${l}</button>`).join('')}</div>
+              </div>
+              <div class="form-group">
+                <label>Words <span class="wsc-edit-count"></span></label>
+                <textarea class="wsc-edit-words input-full textarea-words-inline" rows="5">${escHtml(set.words.join(' '))}</textarea>
+              </div>
+              <div class="form-group">
+                <label>Preview</label>
+                <div class="wsc-edit-preview word-set-preview">\u2014</div>
+              </div>
+              <div class="wsc-edit-actions">
+                <button class="btn btn-secondary btn-small cancel-edit-btn" data-id="${set.id}">Cancel</button>
+                <button class="btn btn-primary btn-small save-edit-btn" data-id="${set.id}">Save</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>`;
     }).join('');
-    list.querySelectorAll('.set-toggle-btn').forEach(b=>b.addEventListener('click',()=>toggleActiveWordSet(b.dataset.id)));
-    list.querySelectorAll('.edit-set-btn').forEach(b=>b.addEventListener('click',()=>openWordSetModal(b.dataset.id)));
-    list.querySelectorAll('.delete-set-btn').forEach(b=>b.addEventListener('click',()=>deleteWordSet(b.dataset.id)));
+    list.querySelectorAll('.word-set-card').forEach(card=>{
+      const id=card.dataset.id;
+      card.querySelector('.set-toggle-btn')?.addEventListener('click',()=>toggleActiveWordSet(id));
+      card.querySelector('.edit-set-btn')?.addEventListener('click',()=>startInlineEdit(card));
+      card.querySelector('.delete-set-btn')?.addEventListener('click',()=>deleteWordSet(id));
+      card.querySelector('.cancel-edit-btn')?.addEventListener('click',()=>cancelInlineEdit(card));
+      card.querySelector('.save-edit-btn')?.addEventListener('click',()=>saveInlineEdit(card));
+      card.querySelectorAll('.wsc-sep-btns .mode-btn').forEach(btn=>btn.addEventListener('click',()=>{
+        card.querySelectorAll('.wsc-sep-btns .mode-btn').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        card.dataset.editSep=btn.dataset.sep;
+        updateInlinePreview(card);
+      }));
+      card.querySelector('.wsc-edit-words')?.addEventListener('input',()=>updateInlinePreview(card));
+      card.addEventListener('dragstart',e=>{
+        if(e.target.closest('button,input,textarea,select,.wsc-edit')||card.classList.contains('is-editing')){e.preventDefault();return;}
+        dragSrcId=id;card.classList.add('dragging');
+        e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',id);
+      });
+      card.addEventListener('dragend',()=>{
+        card.classList.remove('dragging');
+        list.querySelectorAll('.word-set-card').forEach(c=>c.classList.remove('drag-over'));
+      });
+      card.addEventListener('dragover',e=>{
+        e.preventDefault();
+        if(id!==dragSrcId){
+          e.dataTransfer.dropEffect='move';
+          list.querySelectorAll('.word-set-card').forEach(c=>c.classList.remove('drag-over'));
+          card.classList.add('drag-over');
+        }
+      });
+      card.addEventListener('dragleave',e=>{
+        if(!card.contains(e.relatedTarget))card.classList.remove('drag-over');
+      });
+      card.addEventListener('drop',e=>{
+        e.preventDefault();
+        if(id!==dragSrcId)reorderWordSet(dragSrcId,id);
+        card.classList.remove('drag-over');
+      });
+    });
+  }
+
+  function startInlineEdit(card){
+    $('wordSetsList').querySelectorAll('.word-set-card.is-editing').forEach(c=>{if(c!==card)cancelInlineEdit(c);});
+    card.dataset.editSep=card.dataset.editSep??'auto';
+    card.classList.add('is-editing');
+    updateInlinePreview(card);
+    setTimeout(()=>card.querySelector('.wsc-edit-name')?.focus(),50);
+  }
+  function cancelInlineEdit(card){
+    card.classList.remove('is-editing');
+    const id=card.dataset.id;
+    const set=Storage.getWordSets().sets.find(s=>s.id===id);
+    if(!set)return;
+    card.querySelector('.wsc-edit-name').value=set.name;
+    const ta=card.querySelector('.wsc-edit-words');if(ta)ta.value=set.words.join(' ');
+    const sep=set.sep??'auto';
+    card.dataset.editSep=sep;
+    card.querySelectorAll('.wsc-sep-btns .mode-btn').forEach(b=>b.classList.toggle('active',b.dataset.sep===sep));
+    updateInlinePreview(card);
+  }
+  function saveInlineEdit(card){
+    const id=card.dataset.id;
+    const name=card.querySelector('.wsc-edit-name').value.trim();
+    const sep=card.dataset.editSep??'auto';
+    const words=parseWords(card.querySelector('.wsc-edit-words').value,sep);
+    if(!name){alert('Please enter a name.');return;}
+    if(!words.length){alert('No words found.');return;}
+    const data=Storage.getWordSets();
+    const set=data.sets.find(s=>s.id===id);
+    if(set){set.name=name;set.words=words;set.sep=sep;}
+    Storage.saveWordSets(data);
+    renderWordSets();refreshPracticeHeader();refreshTestHeader();
+  }
+  function updateInlinePreview(card){
+    const sep=card.dataset.editSep??'auto';
+    const words=parseWords(card.querySelector('.wsc-edit-words')?.value??'',sep);
+    const countEl=card.querySelector('.wsc-edit-count');
+    const prevEl=card.querySelector('.wsc-edit-preview');
+    if(countEl)countEl.textContent=`(${words.length} word${words.length!==1?'s':''})`;
+    if(prevEl)prevEl.textContent=words.slice(0,20).join(' ')+(words.length>20?'\u2026':'');
+  }
+  function reorderWordSet(srcId,targetId){
+    const data=Storage.getWordSets();
+    const si=data.sets.findIndex(s=>s.id===srcId),ti=data.sets.findIndex(s=>s.id===targetId);
+    if(si<0||ti<0)return;
+    const[moved]=data.sets.splice(si,1);data.sets.splice(ti,0,moved);
+    Storage.saveWordSets(data);renderWordSets();refreshPracticeHeader();refreshTestHeader();
   }
 
   /* Load the bundled English word sets from JSON files */
@@ -1837,7 +1953,7 @@ const App = (() => {
       const set=Storage.getWordSets().sets.find(s=>s.id===editId);
       $('wordSetModalTitle').textContent='Edit Word Set';
       $('wordSetName').value=set.name;
-      $('wordSetInput').value=set.words.join('\n');
+      $('wordSetInput').value=set.words.join(' ');
       wordSetSep=set.sep??'auto';
     }else{
       $('wordSetModalTitle').textContent='New Word Set';
@@ -1879,8 +1995,8 @@ const App = (() => {
     openWordSetModal(null);
     $('wordSetModalTitle').textContent=`New Set from Chord Map (${words.length} words)`;
     $('wordSetName').value=`ChordMap (${words.length} words)`;
-    $('wordSetInput').value=words.join('\n');
-    wordSetSep='\n';
+    $('wordSetInput').value=words.join(' ');
+    wordSetSep='auto';
     document.querySelectorAll('#separatorBtns .mode-btn').forEach(b=>b.classList.toggle('active',b.dataset.sep==='\n'));
     updateWordSetPreview();
   }

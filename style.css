@@ -207,14 +207,28 @@ input[type="text"]:focus, input[type="number"]:focus, input[type="search"]:focus
 .word-detail-meta span { white-space: nowrap; }
 
 /* ══ WORD SETS ══ */
-.word-set-card { display: flex; align-items: flex-start; justify-content: space-between; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; gap: 1rem; flex-wrap: wrap; }
+.word-set-card { display: flex; align-items: flex-start; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; gap: .5rem; }
 .word-set-card.is-active { border-color: var(--accent); }
+.word-set-card.dragging { opacity: .45; }
+.word-set-card.drag-over { border-color: var(--accent); background: var(--bg3); box-shadow: 0 0 0 2px var(--accent); }
+.wsc-drag-handle { cursor: grab; color: var(--txt2); font-size: 1.1rem; padding: .1rem .3rem; user-select: none; align-self: center; flex-shrink: 0; }
+.wsc-drag-handle:active { cursor: grabbing; }
+.wsc-body { flex: 1; min-width: 0; }
+.wsc-view { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .wsc-info { flex: 1; min-width: 0; }
 .wsc-name { font-weight: 600; font-size: 1rem; }
 .wsc-name.is-active::after { content: ' ✓ Active'; font-size: .75rem; font-weight: 400; color: var(--accent); }
 .wsc-meta { font-size: .8rem; color: var(--txt2); margin: .15rem 0; }
 .wsc-preview { font-size: .82rem; color: var(--txt2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 380px; }
 .wsc-actions { display: flex; gap: .4rem; flex-wrap: wrap; align-items: flex-start; }
+/* Inline edit fold animation */
+.wsc-edit { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .25s ease; overflow: hidden; }
+.wsc-edit-inner { min-height: 0; overflow: hidden; }
+.word-set-card.is-editing .wsc-edit { grid-template-rows: 1fr; }
+.word-set-card.is-editing .wsc-view { display: none; }
+.wsc-edit-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; padding-bottom: .25rem; }
+.wsc-edit-count { font-size: .8rem; color: var(--txt2); font-weight: 400; }
+.textarea-words-inline { word-break: break-word; overflow-wrap: break-word; resize: vertical; font-family: inherit; }
 
 /* ══ SETTINGS ══ */
 .settings-section { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .75rem; }
