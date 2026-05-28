@@ -75,12 +75,14 @@ input[type="text"], input[type="number"], input[type="search"], select, textarea
 }
 input[type="text"]:focus, input[type="number"]:focus, input[type="search"]:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .input-small { width: 100px; }
+.input-tiny  { width: 64px; }
 .input-full  { width: 100%; }
 .textarea-words { resize: vertical; font-family: monospace; font-size: .85rem; }
 .form-row   { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
 .form-group { display: flex; flex-direction: column; gap: .4rem; }
 .control-row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
 .action-row  { display: flex; gap: .5rem; flex-wrap: wrap; }
+.quick-settings-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; font-size: .85rem; color: var(--txt2); margin-top: .25rem; }
 
 /* ══ BADGES ══ */
 .badge { display: inline-block; padding: .1rem .45rem; border-radius: 4px; font-size: .75rem; font-weight: 600; }

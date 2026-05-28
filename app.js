@@ -28,6 +28,8 @@ const Storage = (() => {
     secondSuccessIntervalDays: 6,
     maxIntervalDays:        365,
     easeFactorDefault:      2.5,
+    wrongTopN:              20,
+    slowTopN:               20,
   };
 
   const load = (key, fallback) => {
@@ -114,15 +116,50 @@ const Storage = (() => {
       save(K.STATS, all);
     },
 
-    getWordSets:  () => load(K.SETS, { sets: [], activeId: null }),
+    getWordSets() {
+      const d = load(K.SETS, { sets: [], activeIds: [] });
+      /* Migrate legacy single activeId → activeIds array */
+      if (!Array.isArray(d.activeIds)) {
+        d.activeIds = d.activeId ? [d.activeId] : [];
+      }
+      return d;
+    },
     saveWordSets: (d) => save(K.SETS, d),
     getActiveWords() {
-      const { sets, activeId } = api.getWordSets();
-      return sets.find(s => s.id === activeId)?.words ?? [];
+      const { sets, activeIds = [] } = api.getWordSets();
+      const seen = new Set();
+      const words = [];
+      for (const id of activeIds) {
+        const set = sets.find(s => s.id === id);
+        if (set) for (const w of set.words) { if (!seen.has(w)) { seen.add(w); words.push(w); } }
+      }
+      return words;
     },
     getActiveSetName() {
-      const { sets, activeId } = api.getWordSets();
-      return sets.find(s => s.id === activeId)?.name ?? 'None';
+      const { sets, activeIds = [] } = api.getWordSets();
+      const names = activeIds.map(id => sets.find(s => s.id === id)?.name).filter(Boolean);
+      if (!names.length) return 'None';
+      if (names.length === 1) return names[0];
+      return `${names[0]} +${names.length - 1} more`;
+    },
+
+    /* Update word stats WITHOUT touching SM-2 scheduling (for non-SR practice modes) */
+    updateWordStatsOnly(word, result) {
+      const all = api.getAllWordStats();
+      const s = all[word] || api._initStat(word);
+      s.lastSeen = Date.now();
+      if (result.skipped) {
+        s.attempts++; s.skipped = (s.skipped || 0) + 1;
+        all[word] = s; save(K.STATS, all); return;
+      }
+      s.attempts++;
+      if (result.correct) {
+        s.totalCorrect++;
+        if (!result.hadRetry) s.correctFirstTry++;
+      }
+      if (result.delay     != null) s.delayHistory     = [...(s.delayHistory     || []).slice(-49), result.delay];
+      if (result.chordTime != null) s.chordTimeHistory = [...(s.chordTimeHistory || []).slice(-49), result.chordTime];
+      all[word] = s; save(K.STATS, all);
     },
 
     getSessions: () => load(K.SESSIONS, []),
@@ -242,9 +279,9 @@ const Adaptive = (() => {
       const scored = pool.map(word => {
         const s = all[word];
         let score = 1;
-        switch (mode) {
-          case 'adaptive': {
-            if (!s || s.attempts === 0) { score = 8; break; }
+        if (mode === 'adaptive') {
+          if (!s || s.attempts === 0) { score = 8; }
+          else {
             const daysOverdue = Math.max(0, (now - (s.due ?? now)) / 86400000);
             score = 1 + daysOverdue * 2.5;
             const acc = s.attempts ? s.correctFirstTry / s.attempts : 0;
@@ -252,21 +289,9 @@ const Adaptive = (() => {
             if (acc < 0.25) score *= 2;
             const ct = avgArr(s.chordTimeHistory);
             if (ct && ct > t) score *= 1.4;
-            break;
           }
-          case 'slow': {
-            if (!s?.chordTimeHistory?.length) { score = 4; break; }
-            score = Math.max(0.1, avgArr(s.chordTimeHistory) / 500);
-            break;
-          }
-          case 'wrong': {
-            if (!s || s.attempts === 0) { score = 4; break; }
-            const acc = s.correctFirstTry / s.attempts;
-            score = Math.max(0.1, 2.2 - acc * 2);
-            break;
-          }
-          default: score = 1;
         }
+        // For all non-adaptive modes the pool is pre-filtered; pick uniformly.
         return { word, score };
       });
       return weightedPick(scored);
@@ -394,6 +419,41 @@ const CC = (() => {
     return `#${code}`;
   }
   function formatChordKeys(codes) { return codes?.length ? codes.map(codeLabel).join('+') : ''; }
+  /* Sort chord key codes so their labels appear in the order those characters
+     occur in the target word.
+     Special rules for keys whose label is not found in the word:
+       – 'Spc': place after 'd' if 'd' is present in the chord, else at the start.
+       – all other absent keys: insert immediately after their left neighbour
+         from the original chord order (or append at the end if none). */
+  function sortCodesByWordOrder(codes, word) {
+    if (!codes?.length) return codes;
+    const wl = (word || '').toLowerCase();
+    const entries = codes.map((code, origIdx) => {
+      const label = codeLabel(code);
+      // Only single-char labels can appear in a word
+      const pos = label.length === 1 ? wl.indexOf(label.toLowerCase()) : -1;
+      return { code, label, origIdx, pos };
+    });
+    const inWord = entries.filter(e => e.pos >= 0).sort((a, b) => a.pos - b.pos || a.origIdx - b.origIdx);
+    const notInWord = entries.filter(e => e.pos < 0); // already in original order
+    const result = [...inWord];
+    for (const entry of notInWord) {
+      if (entry.label === 'Spc') {
+        const dIdx = result.findIndex(e => e.label.toLowerCase() === 'd');
+        dIdx >= 0 ? result.splice(dIdx + 1, 0, entry) : result.unshift(entry);
+      } else {
+        // Find closest preceding key (by original index) already placed in result
+        let insertPos = -1;
+        for (let i = entry.origIdx - 1; i >= 0; i--) {
+          const idx = result.findIndex(e => e.origIdx === i);
+          if (idx >= 0) { insertPos = idx + 1; break; }
+        }
+        insertPos >= 0 ? result.splice(insertPos, 0, entry) : result.push(entry);
+      }
+    }
+    return result.map(e => e.code);
+  }
+  function formatChordKeysForWord(codes, word) { return formatChordKeys(sortCodesByWordOrder(codes, word)); }
   function parseCmlC0(line) {
     const m = String(line||'').trim().match(/^CML\s+C0\s+(\d+)$/);
     return m ? parseInt(m[1],10) : null;
@@ -483,7 +543,7 @@ const CC = (() => {
       const entry = stored.map[word.toLowerCase()];
       if (!entry) return null;
       // Recompute from keys so hints are correct even if stored display used old codeLabel
-      return entry.keys?.length ? formatChordKeys(entry.keys) : (entry.display ?? null);
+      return entry.keys?.length ? formatChordKeysForWord(entry.keys, word) : (entry.display ?? null);
     },
     getWordList() {
       const stored = Storage.getChordMap();
@@ -772,12 +832,81 @@ const App = (() => {
   /* ============================================================
      PRACTICE
   ============================================================ */
+
+  /* Returns the word pool for non-SR modes.
+     wrong: top N words by lowest accuracy (worst first).
+     slow:  top N words by highest avg chord time.
+     random/adaptive: all words unchanged. */
+  function getEffectivePool(words, mode) {
+    if (mode === 'adaptive' || mode === 'random') return words;
+    const all = Storage.getAllWordStats();
+    const settings = Storage.getSettings();
+    if (mode === 'wrong') {
+      const n = Math.max(1, settings.wrongTopN ?? 20);
+      return [...words]
+        .sort((a, b) => {
+          const sa = all[a], sb = all[b];
+          // Words with no attempts treated as worst (0 accuracy)
+          const accA = sa?.attempts ? sa.correctFirstTry / sa.attempts : 0;
+          const accB = sb?.attempts ? sb.correctFirstTry / sb.attempts : 0;
+          return accA - accB; // ascending — worst first
+        })
+        .slice(0, n);
+    }
+    if (mode === 'slow') {
+      const n = Math.max(1, settings.slowTopN ?? 20);
+      const withData    = words.filter(w =>  all[w]?.chordTimeHistory?.length)
+        .sort((a, b) => avgArr(all[b].chordTimeHistory) - avgArr(all[a].chordTimeHistory));
+      const withoutData = words.filter(w => !all[w]?.chordTimeHistory?.length);
+      return [...withData, ...withoutData].slice(0, n);
+    }
+    return words;
+  }
+
+  /* Renders mode-specific quick settings below the mode buttons. */
+  function renderQuickSettings(mode) {
+    const el = $('practiceQuickSettings');
+    if (!el) return;
+    const settings = Storage.getSettings();
+    if (mode === 'wrong') {
+      el.innerHTML = `<div class="quick-settings-row">
+        <span class="label">Show worst</span>
+        <input id="psWrongTopN" class="input-small input-tiny" type="number" min="1" max="9999" value="${settings.wrongTopN ?? 20}">
+        <span class="label">words by accuracy</span>
+      </div>`;
+      $('psWrongTopN')?.addEventListener('change', e => {
+        const s = Storage.getSettings();
+        s.wrongTopN = Math.max(1, parseInt(e.target.value) || 20);
+        Storage.saveSettings(s);
+        PS.word = null; nextPracticeWord();
+      });
+    } else if (mode === 'slow') {
+      el.innerHTML = `<div class="quick-settings-row">
+        <span class="label">Show worst</span>
+        <input id="psSlowTopN" class="input-small input-tiny" type="number" min="1" max="9999" value="${settings.slowTopN ?? 20}">
+        <span class="label">words by chord time</span>
+      </div>`;
+      $('psSlowTopN')?.addEventListener('change', e => {
+        const s = Storage.getSettings();
+        s.slowTopN = Math.max(1, parseInt(e.target.value) || 20);
+        Storage.saveSettings(s);
+        PS.word = null; nextPracticeWord();
+      });
+    } else {
+      el.innerHTML = '';
+    }
+  }
+
   function refreshPracticeHeader(){
+    const words=Storage.getActiveWords();
     const data=Storage.getWordSets();
-    const active=data.sets.find(s=>s.id===data.activeId);
-    $('practiceActiveSetName').textContent=active?.name??'None';
-    $('practiceWordCount').textContent=active?`(${active.words.length} words)`:'';
-    const hasWords=active&&active.words.length>0;
+    const activeIds=data.activeIds??[];
+    const activeSets=data.sets.filter(s=>activeIds.includes(s.id));
+    if(activeSets.length===0)$('practiceActiveSetName').textContent='None';
+    else if(activeSets.length===1)$('practiceActiveSetName').textContent=activeSets[0].name;
+    else $('practiceActiveSetName').textContent=activeSets.map(s=>s.name).join(', ');
+    $('practiceWordCount').textContent=activeSets.length?`(${words.length} words)`:'';
+    const hasWords=words.length>0;
     $('noWordSetMsg').classList.toggle('hidden',hasWords);
     $('practiceContent').classList.toggle('hidden',!hasWords);
     $('practiceFinished').classList.add('hidden');
@@ -793,6 +922,7 @@ const App = (() => {
     PS.mode=mode;
     document.querySelectorAll('#practiceModeBtns .mode-btn').forEach(b=>
       b.classList.toggle('active',b.dataset.mode===mode));
+    renderQuickSettings(mode);
     PS.word=null;
     nextPracticeWord();
   }
@@ -803,11 +933,12 @@ const App = (() => {
   }
 
   function nextPracticeWord(){
-    const words=Storage.getActiveWords();
-    if(!words.length)return;
+    const allWords=Storage.getActiveWords();
+    if(!allWords.length)return;
     const settings=Storage.getSettings();
-    if(PS.mode==='adaptive'&&checkAllDone(words)){showPracticeFinished();return;}
-    const w=Adaptive.getNextWord(words,PS.mode,PS.word,settings);
+    if(PS.mode==='adaptive'&&checkAllDone(allWords)){showPracticeFinished();return;}
+    const pool=getEffectivePool(allWords,PS.mode);
+    const w=Adaptive.getNextWord(pool,PS.mode,PS.word,settings);
     PS.word=w;PS.shownAt=Date.now();PS.firstKeyAt=null;
     PS.hadRetry=false;PS.hadWrongWord=false;PS.retryCount=0;
     PS.lastLen=0;PS.waiting=false;
@@ -971,9 +1102,15 @@ const App = (() => {
       updateStreakDisplay();
       const quality=Adaptive.calcQuality(hadRetry,chordTime,settings);
       showWordResult(delay,chordTime,hadRetry);
-      Storage.updateWordResult(target,{
-        correct:true,hadRetry,delay,chordTime:chordTime>0?chordTime:null,quality,
-      });
+      if(PS.mode==='adaptive'){
+        Storage.updateWordResult(target,{
+          correct:true,hadRetry,delay,chordTime:chordTime>0?chordTime:null,quality,
+        });
+      }else{
+        Storage.updateWordStatsOnly(target,{
+          correct:true,hadRetry,delay,chordTime:chordTime>0?chordTime:null,
+        });
+      }
       Storage.addPracticeMs(chordTime>0?chordTime:0);
     } else {
       // AFK attempt — show result info but don't record stats
@@ -990,7 +1127,11 @@ const App = (() => {
     PS.streak=0;PS.sTotal++;
     updateStreakDisplay();
     $('wordDisplay').classList.add('state-wrong','anim-err');
-    Storage.updateWordResult(PS.word,{skipped:true});
+    if(PS.mode==='adaptive'){
+      Storage.updateWordResult(PS.word,{skipped:true});
+    }else{
+      Storage.updateWordStatsOnly(PS.word,{skipped:true});
+    }
     setTimeout(nextPracticeWord,450);
   }
 
@@ -1038,7 +1179,7 @@ const App = (() => {
     }
     const entry = stored.map[word.toLowerCase()];
     if (!entry) { el.innerHTML = '<span class="cdsp-none">no chord mapped for this word</span>'; return; }
-    const keys = entry.keys?.length ? formatChordKeys(entry.keys) : (entry.display ?? '');
+    const keys = entry.keys?.length ? formatChordKeysForWord(entry.keys, word) : (entry.display ?? '');
     if (!keys) { el.innerHTML = '<span class="cdsp-none">chord has no keys</span>'; return; }
     el.innerHTML = `⌨ <span class="cdsp-keys">${escHtml(keys)}</span>`;
   }
@@ -1050,7 +1191,7 @@ const App = (() => {
     if (!stored?.map) { result.innerHTML = '<span style="color:var(--warn)">No chord map loaded.</span>'; return; }
     const entry = stored.map[word.toLowerCase()];
     if (!entry) { result.innerHTML = `<span style="color:var(--txt2)">“${escHtml(word)}” not in chord map.</span>`; return; }
-    const keys = entry.keys?.length ? formatChordKeys(entry.keys) : (entry.display ?? '?');
+    const keys = entry.keys?.length ? formatChordKeysForWord(entry.keys, word) : (entry.display ?? '?');
     result.innerHTML = `<div style="margin:.25rem 0"><span class="cdsp-keys" style="font-size:1rem">${escHtml(keys)}</span></div><div style="font-size:.72rem;opacity:.55">Raw codes: ${escHtml(JSON.stringify(entry.keys??[]))}</div>`;
   }
 
@@ -1601,7 +1742,7 @@ const App = (() => {
      WORD SETS
   ============================================================ */
   function renderWordSets(){
-    const{sets,activeId}=Storage.getWordSets();
+    const{sets,activeIds=[]}=Storage.getWordSets();
     const list=$('wordSetsList');
     if(!sets.length){
       list.innerHTML=`<div class="empty-state">
@@ -1618,7 +1759,7 @@ const App = (() => {
       return;
     }
     list.innerHTML=sets.map(set=>{
-      const isActive=set.id===activeId;
+      const isActive=activeIds.includes(set.id);
       return`<div class="word-set-card ${isActive?'is-active':''}">
         <div class="wsc-info">
           <div class="wsc-name ${isActive?'is-active':''}">${escHtml(set.name)}</div>
@@ -1626,13 +1767,13 @@ const App = (() => {
           <div class="wsc-preview">${escHtml(set.words.slice(0,12).join(' '))}${set.words.length>12?'…':''}</div>
         </div>
         <div class="wsc-actions">
-          ${!isActive?`<button class="btn btn-primary btn-small set-active-btn" data-id="${set.id}">Set Active</button>`:''}
+          <button class="btn ${isActive?'btn-primary':'btn-secondary'} btn-small set-toggle-btn" data-id="${set.id}">${isActive?'✓ Active':'Activate'}</button>
           <button class="btn btn-secondary btn-small edit-set-btn" data-id="${set.id}">Edit</button>
           <button class="btn btn-danger btn-small delete-set-btn" data-id="${set.id}">Delete</button>
         </div>
       </div>`;
     }).join('');
-    list.querySelectorAll('.set-active-btn').forEach(b=>b.addEventListener('click',()=>setActiveWordSet(b.dataset.id)));
+    list.querySelectorAll('.set-toggle-btn').forEach(b=>b.addEventListener('click',()=>toggleActiveWordSet(b.dataset.id)));
     list.querySelectorAll('.edit-set-btn').forEach(b=>b.addEventListener('click',()=>openWordSetModal(b.dataset.id)));
     list.querySelectorAll('.delete-set-btn').forEach(b=>b.addEventListener('click',()=>deleteWordSet(b.dataset.id)));
   }
@@ -1659,8 +1800,10 @@ const App = (() => {
         added++;
       }catch(err){console.warn('Could not load',file,err);}
     }
-    if(!data.activeId&&data.sets.length)data.activeId=data.sets[0].id;
-    if(activate&&!data.activeId&&data.sets.length)data.activeId=data.sets[0].id;
+    if(activate&&data.sets.length){
+      if(!data.activeIds)data.activeIds=[];
+      if(!data.activeIds.length)data.activeIds=[data.sets[0].id];
+    }
     Storage.saveWordSets(data);
     if(btn){btn.disabled=false;btn.textContent=`+ English Sets${added?` (${added} added)`:' (already loaded)'}` ;}
     renderWordSets();refreshPracticeHeader();refreshTestHeader();
@@ -1668,15 +1811,21 @@ const App = (() => {
     else alert('Default word sets are already loaded.');
   }
 
-  function setActiveWordSet(id){
-    const data=Storage.getWordSets();data.activeId=id;Storage.saveWordSets(data);
+  function toggleActiveWordSet(id){
+    const data=Storage.getWordSets();
+    if(!Array.isArray(data.activeIds))data.activeIds=data.activeId?[data.activeId]:[];
+    const idx=data.activeIds.indexOf(id);
+    if(idx>=0)data.activeIds.splice(idx,1);
+    else data.activeIds.push(id);
+    Storage.saveWordSets(data);
     PS.word=null;renderWordSets();refreshPracticeHeader();refreshTestHeader();
   }
   function deleteWordSet(id){
     const data=Storage.getWordSets(),set=data.sets.find(s=>s.id===id);
     confirmAction(`Delete "${set?.name}"? Word progress is kept.`,()=>{
       data.sets=data.sets.filter(s=>s.id!==id);
-      if(data.activeId===id)data.activeId=data.sets[0]?.id??null;
+      data.activeIds=(data.activeIds||[]).filter(x=>x!==id);
+      if(!data.activeIds.length&&data.sets.length)data.activeIds=[data.sets[0].id];
       Storage.saveWordSets(data);PS.word=null;
       renderWordSets();refreshPracticeHeader();refreshTestHeader();
     });
@@ -1715,7 +1864,7 @@ const App = (() => {
     }else{
       const newSet={id:uid(),name,words,sep:wordSetSep,created:Date.now()};
       data.sets.push(newSet);
-      if(!data.activeId)data.activeId=newSet.id;
+      if(!data.activeIds?.length)data.activeIds=[newSet.id];
     }
     Storage.saveWordSets(data);closeWordSetModal();
     renderWordSets();refreshPracticeHeader();refreshTestHeader();
@@ -1866,6 +2015,7 @@ const App = (() => {
       $('practiceContent').classList.remove('hidden');
       PS.mode='random';
       document.querySelectorAll('#practiceModeBtns .mode-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode==='random'));
+      renderQuickSettings('random');
       PS.word=null;nextPracticeWord();
     });
     $('trainSlowestWordsBtn')?.addEventListener('click',()=>{
@@ -1873,6 +2023,7 @@ const App = (() => {
       $('practiceContent').classList.remove('hidden');
       PS.mode='slow';
       document.querySelectorAll('#practiceModeBtns .mode-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode==='slow'));
+      renderQuickSettings('slow');
       PS.word=null;nextPracticeWord();
     });
     $('goToWordSetsBtn')?.addEventListener('click',()=>switchTab('wordsets'));
@@ -2048,6 +2199,7 @@ const App = (() => {
     });
 
     refreshPracticeHeader();
+    renderQuickSettings(PS.mode);
     refreshTestHeader();
     if(Storage.isFirstVisit())openHelp();
     if('serviceWorker' in navigator){

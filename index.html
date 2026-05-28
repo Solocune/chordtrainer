@@ -44,7 +44,7 @@
 <section id="tab-practice" class="tab-content active">
   <div class="tab-inner">
     <h2 class="section-title">Practice</h2>
-    <p class="tab-intro">Adaptive chord training using spaced repetition. A word appears — chord it on your device. The trainer ignores the intermediate characters from chord detection and only checks the final output. Words you struggle with appear more often; mastered words are spaced out. Choose a mode to focus on accuracy, speed, or let the algorithm decide. If you go AFK for more than 5 s, the attempt is automatically excluded from statistics.</p>
+    <p class="tab-intro">Adaptive chord training using spaced repetition. A word appears — chord it on your device. The trainer ignores the intermediate characters from chord detection and only checks the final output. Words you struggle with appear more often; mastered words are spaced out. Choose a mode to focus on accuracy, speed or all words of the word sets at random. Those modes have no effect on the scheduling. If you go AFK for more than 5 s, the attempt is automatically excluded from statistics.</p>
 
     <div id="noWordSetMsg" class="empty-state hidden">
       <div class="empty-icon">📝</div>
@@ -81,12 +81,15 @@
       <div class="control-row">
         <label class="label">Mode:</label>
         <div id="practiceModeBtns" class="btn-group mode-btns">
-          <button class="mode-btn active" data-mode="adaptive" title="SM-2 spaced repetition — focuses on due and weak words">Adaptive</button>
-          <button class="mode-btn" data-mode="wrong" title="Words you chord wrong most often appear more frequently">Wrong</button>
-          <button class="mode-btn" data-mode="slow" title="Words where your chord reaction time is highest">Slow</button>
-          <button class="mode-btn" data-mode="random" title="Equal probability for all words">Random</button>
+          <button class="mode-btn active" data-mode="adaptive" title="SM-2 spaced repetition — focuses on due and weak words">Spaced Rep.</button>
+          <button class="mode-btn" data-mode="wrong" title="Train the X words you chord wrong most often — no SR scheduling">Wrong</button>
+          <button class="mode-btn" data-mode="slow" title="Train the X words where your chord time is highest — no SR scheduling">Slow</button>
+          <button class="mode-btn" data-mode="random" title="All words, equal probability — no SR scheduling">Random</button>
         </div>
       </div>
+
+      <!-- Mode-specific quick settings (populated by JS) -->
+      <div id="practiceQuickSettings"></div>
 
       <!-- Streak / session bar -->
       <div class="streak-bar" title="Session X/Y = correct/total attempts this session. Accuracy = correct ÷ total.">
@@ -340,7 +343,7 @@
     <div class="section-header-row">
       <div>
         <h2 class="section-title">Word Sets</h2>
-        <p class="tab-intro">Word sets are the list of chords you want to train. Create custom sets by pasting words, generate a set automatically from your CharaChorder's chord map, or load the built-in English word lists to get started quickly. Only one set is active at a time.</p>
+        <p class="tab-intro">Word sets are the list of chords you want to train. Create custom sets by pasting words, generate a set automatically from your CharaChorder's chord map, or load the built-in English word lists to get started quickly. It is possible to activate multiple sets at once.</p>
       </div>
       <div class="btn-row" style="align-self:flex-start">
         <button id="loadDefaultSetsBtn" class="btn btn-secondary btn-small" title="Load the built-in English Top 200 and Top 1000 word sets">+ English Sets</button>
