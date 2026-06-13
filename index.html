@@ -44,7 +44,7 @@
 <section id="tab-practice" class="tab-content active">
   <div class="tab-inner">
     <h2 class="section-title">Practice</h2>
-    <p class="tab-intro">Adaptive chord training using spaced repetition. A word appears — chord it on your device. The trainer ignores the intermediate characters from chord detection and only checks the final output. Words you struggle with appear more often; mastered words are spaced out. Choose a mode to focus on accuracy, speed or all words of the word sets at random. Those modes have no effect on the scheduling. If you go AFK for more than 5 s, the attempt is automatically excluded from statistics.</p>
+    <p class="tab-intro">Adaptive chord training using spaced repetition. A word appears — chord it on your device. The trainer ignores the intermediate characters from chord detection and only checks the final output. Words you struggle with appear more often; mastered words are spaced out. Choose a mode to focus on accuracy, speed or all words of the word sets at random. Those modes have no effect on the scheduling. If you go AFK or switch focus for more than the configured AFK threshold (default 5 s), the attempt is automatically excluded from statistics.</p>
 
     <div id="noWordSetMsg" class="empty-state hidden">
       <div class="empty-icon">📝</div>
@@ -65,6 +65,14 @@
           <button id="continueTrainingBtn" class="btn btn-primary">Continue Practicing (random)</button>
           <button id="trainSlowestWordsBtn" class="btn btn-secondary">Train Slowest Words</button>
           <button id="goToWordSetsBtn" class="btn btn-secondary">Add More Words</button>
+        </div>
+        <!-- Backup reminder banner — shown periodically -->
+        <div id="backupReminderBanner" class="backup-reminder hidden" style="margin-top:1rem">
+          <span>💾 Time for a backup! Export your progress to keep it safe.</span>
+          <div class="btn-row" style="justify-content:center;margin-top:.4rem;gap:.5rem">
+            <button id="backupReminderExportBtn" class="btn btn-primary btn-small">Export backup now</button>
+            <button id="backupReminderDismissBtn" class="btn btn-secondary btn-small">Remind me later</button>
+          </div>
         </div>
       </div>
     </div>
@@ -247,13 +255,17 @@
 <section id="tab-stats" class="tab-content">
   <div class="tab-inner">
     <h2 class="section-title">Statistics</h2>
-    <p class="tab-intro">Overview of your training progress. The WPM chart shows test session history. The per-word table tracks accuracy, chord time, and next review date for every word you've practiced. Click any word row to expand sparkline graphs of its history. Sort or search to find weak spots.</p>
+    <p class="tab-intro">Overview of your training progress. The learned-words chart shows how your vocabulary has grown over time. The per-word table tracks accuracy, chord time, and next review date for every word you've practiced. Click any word row to expand sparkline graphs of its history. Sort or search to find weak spots.</p>
 
     <!-- Overview cards -->
     <div class="overview-grid">
       <div class="ov-card">
         <div class="ov-val" id="statsTotalWords">—</div>
         <div class="ov-label">Words tracked</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-val" id="statsLearnedWords">—</div>
+        <div class="ov-label" title="Words whose review interval has reached the learned threshold (configurable in Settings → General)">Learned words</div>
       </div>
       <div class="ov-card">
         <div class="ov-val" id="statsOverallAccuracy">—</div>
@@ -273,11 +285,12 @@
       </div>
     </div>
 
-    <!-- WPM chart -->
+    <!-- Learned words chart -->
     <div class="chart-section">
-      <h3>WPM over time</h3>
-      <div class="chart-wrap"><canvas id="wpmChart"></canvas></div>
-      <p id="noChartMsg" style="display:none;color:var(--txt2);text-align:center">No test sessions yet.</p>
+      <h3>Learned words over time</h3>
+      <p class="setting-desc" style="margin-bottom:.5rem">Cumulative count of words whose interval reached the learned threshold. Threshold is set in <strong>Settings → General</strong>.</p>
+      <div class="chart-wrap"><canvas id="learnedChart"></canvas></div>
+      <p id="noLearnedChartMsg" style="display:none;color:var(--txt2);text-align:center">No learned words yet — keep practicing!</p>
     </div>
 
     <!-- Word stats table -->
@@ -377,15 +390,24 @@
         <label class="setting-label" title="How long a skipped word is postponed before it becomes due again">Skip delay (minutes)</label>
         <input id="settingSkipDelay" type="number" min="0" max="1440" step="1" class="input-small">
 
+        <label class="setting-label" title="Seconds of inactivity (or focus loss) before an attempt is excluded from statistics. Also controls pause detection in Test mode.">AFK threshold (seconds)</label>
+        <input id="settingAfkThreshold" type="number" min="1" max="300" step="1" class="input-small">
+
         <label class="setting-label" title="Treat uppercase and lowercase as the same">Case insensitive</label>
         <input id="settingCaseInsensitive" type="checkbox">
+
+        <label class="setting-label" title="Minimum review interval (days) for a word to be counted as 'learned'. Shown in Statistics overview.">Learned threshold (days)</label>
+        <input id="settingLearnedThreshold" type="number" min="1" max="3650" step="1" class="input-small">
+
+        <label class="setting-label" title="How often (in days) to remind you to export a backup when all due words are done. Set to 0 to disable.">Backup reminder (days, 0=off)</label>
+        <input id="settingBackupReminderDays" type="number" min="0" max="365" step="1" class="input-small">
       </div>
     </div>
 
     <!-- Spaced Repetition Tuning -->
     <div class="settings-section">
       <h3>Spaced Repetition Tuning</h3>
-      <p class="setting-desc">Fine-tune how the SM-2 algorithm schedules reviews. Lower the max interval or ease factor to see words more often. Use the action buttons to bring overdue content forward.</p>
+      <p class="setting-desc">Fine-tune how the SM-2 algorithm schedules reviews. Lower the max interval or growth factor to see words more often. Use the action buttons to bring overdue content forward.</p>
       <div class="settings-grid">
         <label class="setting-label" title="Interval after the first fully remembered success (no hint/retry)">1st success interval (days)</label>
         <input id="settingFirstSuccessInterval" type="number" min="1" max="3650" value="1" class="input-small">
@@ -396,16 +418,29 @@
         <label class="setting-label" title="Cap the maximum review interval in days — prevents words from disappearing for too long">Max interval (days)</label>
         <input id="settingMaxIntervalDays" type="number" min="1" max="3650" value="365" class="input-small">
 
-        <label class="setting-label" title="Starting ease factor for new words (higher = interval grows faster; lower = more frequent reviews)">Initial ease factor</label>
+        <label class="setting-label" title="Initial growth factor (multiplier used to grow intervals; higher = grows faster; lower = more frequent reviews)">Initial growth factor</label>
         <input id="settingEaseFactorDefault" type="number" min="1.3" max="4.0" step="0.1" value="2.5" class="input-small">
       </div>
-      <div class="btn-row" style="margin-top:.75rem;flex-wrap:wrap;gap:.5rem">
-        <button id="bringAllDueBtn" class="btn btn-secondary btn-small" title="Mark every word as due right now so they all appear in Adaptive practice">Set all words due now</button>
-        <div style="display:flex;align-items:center;gap:.4rem">
-          <label class="setting-label" style="margin:0" for="bringForwardDaysInput">Bring forward by</label>
-          <input id="bringForwardDaysInput" type="number" min="1" max="3650" value="1" class="input-small" style="width:4.5rem">
-          <span class="setting-label" style="margin:0">day(s)</span>
-          <button id="bringForwardBtn" class="btn btn-secondary btn-small">Apply</button>
+      <div class="btn-row" style="margin-top:.75rem;flex-wrap:wrap;gap:.75rem">
+        <div style="flex:1;min-width:320px;padding:.5rem;border:1px solid rgba(255,255,255,0.06);border-radius:6px;">
+          <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
+            <button id="bringAllDueBtn" class="btn btn-secondary btn-small" title="Mark every word as due right now so they all appear in Adaptive practice">Set all words due now</button>
+            <div style="display:flex;align-items:center;gap:.4rem">
+              <label class="setting-label" style="margin:0" for="bringForwardDaysInput">Bring forward by</label>
+              <input id="bringForwardDaysInput" type="number" min="0" max="3650" value="1" class="input-small" style="width:4.5rem">
+              <span class="setting-label" style="margin:0">day(s)</span>
+              <input id="bringForwardHoursInput" type="number" min="0" max="23" value="0" class="input-small" style="width:4.2rem;margin-left:.4rem">
+              <span class="setting-label" style="margin:0">hour(s)</span>
+              <button id="bringForwardBtn" class="btn btn-secondary btn-small">Apply</button>
+            </div>
+          </div>
+          <div class="setting-desc" style="margin-top:.5rem">Bring-forward applies to the <strong>due</strong> countdown only — it moves the current countdown sooner, it does not change the stored base interval used to compute future reviews.</div>
+        </div>
+
+        <div style="flex:0 0 320px;padding:.6rem;border:1px dashed rgba(255,255,255,0.06);border-radius:6px;background:rgba(255,255,255,0.01)">
+          <div style="font-weight:600;margin-bottom:.25rem">Base interval vs Due time</div>
+          <div class="setting-desc" style="margin:0 0 .5rem 0">Base interval = stored days that grow after successes. Due = countdown until next review. Reset clears base intervals.</div>
+          <button id="resetBaseIntervalsBtn" class="btn btn-warning btn-small" title="Reset the stored base interval for all words (sets base interval to 0 and restarts scheduling)">Reset base intervals</button>
         </div>
       </div>
     </div>
@@ -472,7 +507,13 @@
     <!-- Data -->
     <div class="settings-section">
       <h3>Data</h3>
-      <div class="btn-row">
+      <div class="disclaimer-box">
+        ⚠ <strong>Back up your data regularly!</strong> ChordTrainer is under active development.
+        Data is stored only in your browser's localStorage — it can be lost if you clear browser data,
+        switch browsers, or if the app moves to a different domain. <strong>Export a JSON backup frequently</strong>
+        (e.g. once a week) to prevent data loss. We recommend keeping backups in cloud storage or a safe folder.
+      </div>
+      <div class="btn-row" style="margin-top:.75rem">
         <button id="exportDataBtn" class="btn btn-secondary">Export backup</button>
         <button id="importDataBtn" class="btn btn-secondary">Import backup</button>
         <input id="importFileInput" type="file" accept=".json" class="hidden">
@@ -513,7 +554,7 @@
         </ul>
         <p><strong>Session X/Y (Accuracy%)</strong> — X = words chorded correctly on the first attempt this session, Y = total attempts. Accuracy = X÷Y. When you backspace and retry, it counts as an attempt but not a correct first-try.</p>
         <p><strong>Streak</strong> — consecutive words chorded correctly without any correction.</p>
-        <p><strong>AFK detection:</strong> If you're away from the keyboard for more than 5 seconds when a word is waiting, that attempt is excluded from statistics entirely — so stepping away won't distort your accuracy or chord-time scores. The word still advances normally when you return and chord it.</p>
+        <p><strong>AFK detection:</strong> If you're away from the keyboard for more than the AFK threshold (default 5 seconds, adjustable in Settings), or if you switch to another tab/window or click outside the typing field, that attempt is excluded from statistics entirely — so stepping away won't distort your accuracy or chord-time scores. The word still advances normally when you return and chord it.</p>
         <p>When all words in Adaptive mode are scheduled for future review, you'll see a <em>Congratulations</em> screen. You can continue in Random mode or add more words.</p>
       </div>
 
@@ -533,7 +574,8 @@
       <div class="help-section">
         <h3>📊 Statistics tab</h3>
         <p>Click any word row to expand sparkline charts showing its chord time and delay history. Use the sort options to find your slowest or most error-prone words. Click <em>Reset</em> on a word to wipe its SM-2 progress (useful if you've reprogrammed a chord).</p>
-        <p><strong>Practice time</strong> — total active practice time accumulated in the Practice tab. AFK periods (idle &gt;5 s) are excluded so stepping away doesn't inflate the counter.</p>
+        <p><strong>Learned words</strong> — a word is counted as "learned" once its review interval reaches the configured threshold (default: 10 days). The threshold is adjustable in <strong>Settings → General</strong>. The chart shows cumulative learned-word count over time.</p>
+        <p><strong>Practice time</strong> — total active practice time accumulated in the Practice tab. AFK periods (idle &gt; AFK threshold) are excluded so stepping away doesn't inflate the counter.</p>
         <p><strong>Next Review</strong> — the SM-2 algorithm schedules each word for review after a growing interval (configurable early steps, then multiplicative growth). Overdue = the word is ready now.</p>
       </div>
 
@@ -557,7 +599,7 @@
         <ul>
           <li><strong>1st / 2nd success interval</strong> — set the first two spacing steps after memory-only correct answers (defaults: 1 day, then 6 days). Lower these if the default ramp feels too steep.</li>
           <li><strong>Max interval (days)</strong> — caps how long a word can go before being reviewed again. Default 365. Lower it (e.g. 30) to keep all words fresher.</li>
-          <li><strong>Initial ease factor</strong> — how fast intervals grow for new words. Default 2.5. Lower it for more frequent repetition.</li>
+          <li><strong>Initial growth factor</strong> — interval multiplier for new words (default 2.5). Lower it for more frequent repetition.</li>
           <li><strong>Set all words due now</strong> — immediately marks every word for review (useful after a break).</li>
           <li><strong>Bring forward by N days</strong> — shifts every word's next review N days earlier, shortening current intervals.</li>
         </ul>

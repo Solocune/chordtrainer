@@ -30,6 +30,9 @@ const Storage = (() => {
     easeFactorDefault:      2.5,
     wrongTopN:              20,
     slowTopN:               20,
+    afkThresholdSeconds:    5,
+    learnedThresholdDays:   10,
+    backupReminderDays:     7,
   };
 
   const load = (key, fallback) => {
@@ -50,7 +53,9 @@ const Storage = (() => {
       return {
         word, attempts: 0, correctFirstTry: 0, totalCorrect: 0, skipped: 0,
         delayHistory: [], chordTimeHistory: [], pureWpmHistory: [],
-        interval: 1, easeFactor: api.getSettings().easeFactorDefault ?? 2.5, repetitions: 0,
+        // `baseIntervalDays` is the stored base interval used to compute next due dates.
+        // `interval` is kept for backward-compatibility when migrating old stats.
+        baseIntervalDays: 0, interval: 0, easeFactor: api.getSettings().easeFactorDefault ?? 2.5, repetitions: 0,
         due: Date.now(), firstSeen: Date.now(), lastSeen: null,
       };
     },
@@ -63,7 +68,7 @@ const Storage = (() => {
       s.lastSeen = now;
       if (result.skipped) {
         s.attempts++; s.skipped = (s.skipped || 0) + 1;
-        s.repetitions = 0; s.interval = 1;
+        s.repetitions = 0; s.baseIntervalDays = 0;
         const skipDelayMs = Math.max(0, (settings.skipDelayMinutes ?? 5)) * 60 * 1000;
         s.due = now + skipDelayMs;
         all[word] = s; save(K.STATS, all); return;
@@ -79,17 +84,33 @@ const Storage = (() => {
       if (q >= 3) {
         const firstDays = Math.max(1, settings.firstSuccessIntervalDays ?? 1);
         const secondDays = Math.max(1, settings.secondSuccessIntervalDays ?? 6);
-        if      (s.repetitions === 0) s.interval = firstDays;
-        else if (s.repetitions === 1) s.interval = secondDays;
-        else s.interval = Math.round(s.interval * s.easeFactor);
+        // Determine new base interval (float days). Use existing baseIntervalDays if present,
+        // fall back to legacy `interval` for migrated data.
+        if (s.repetitions === 0) {
+          s.baseIntervalDays = firstDays;
+        } else if (s.repetitions === 1) {
+          s.baseIntervalDays = secondDays;
+        } else {
+          const prevBase = (s.baseIntervalDays ?? s.interval ?? secondDays);
+          s.baseIntervalDays = prevBase * s.easeFactor;
+        }
         s.repetitions++;
         s.easeFactor = Math.max(1.3, s.easeFactor + 0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
-        s.interval = Math.min(s.interval, settings.maxIntervalDays ?? 365);
-        s.due = now + s.interval * 86400 * 1000;
+        s.baseIntervalDays = Math.min(s.baseIntervalDays, settings.maxIntervalDays ?? 365);
+        // Set countdown (due) from the base interval. Round to milliseconds.
+        s.due = now + Math.round((s.baseIntervalDays ?? s.interval ?? 0) * 86400 * 1000);
+        // For compatibility, keep a rounded integer `interval` too (not used for scheduling).
+        s.interval = Math.round(s.baseIntervalDays || 0);
+        // Track when word first reaches the "learned" threshold (based on base interval)
+        const learnedThreshold = settings.learnedThresholdDays ?? 10;
+        if ((s.baseIntervalDays ?? s.interval ?? 0) >= learnedThreshold && !s.learnedAt) {
+          s.learnedAt = now;
+        }
       } else {
         // A corrected/hinted answer is not treated as memory success.
         s.repetitions = 0;
-        s.interval = 1;
+        s.baseIntervalDays = 0;
+        s.interval = 0;
         s.due = now;
       }
       all[word] = s; save(K.STATS, all);
@@ -110,8 +131,20 @@ const Storage = (() => {
     bringForwardByDays(days) {
       const all = api.getAllWordStats(), now = Date.now(), shift = days * 86400000;
       for (const s of Object.values(all)) {
+        // Only shift the countdown (due). Do not change the base interval used to compute future due dates.
         s.due = Math.max(now, (s.due ?? now) - shift);
-        s.interval = Math.max(1, Math.round((s.interval ?? 1) - days));
+      }
+      save(K.STATS, all);
+    },
+
+    // Reset the stored base interval for all words (useful to restart scheduling)
+    resetAllBaseIntervals() {
+      const all = api.getAllWordStats();
+      for (const s of Object.values(all)) {
+        s.baseIntervalDays = 0;
+        s.repetitions = 0;
+        s.interval = 0;
+        delete s.learnedAt;
       }
       save(K.STATS, all);
     },
@@ -398,12 +431,24 @@ const CC = (() => {
   function codeLabel(code) {
     // Special-key lookup FIRST — must precede range checks so e.g.
     // code 32 (SPACE, ASCII) is not caught by the HID 30–38 range (which maps to '1'–'9').
+    // Covers both legacy HID codes (serial format) and CharaChorder action codes (JSON format).
     const sp = {
+      // ASCII control codes
+      8:'⌫', 9:'Tab', 13:'↵', 27:'Esc',
+      // HID keyboard usage codes (serial / old charachorder.io JSON)
       40:'↵', 41:'Esc', 42:'⌫', 43:'Tab', 44:'Spc',
       45:'-', 46:'=', 47:'[', 48:']', 49:'\\', 51:';', 52:"'", 53:'`', 54:',', 55:'.', 56:'/',
       79:'→', 80:'←', 81:'↓', 82:'↑',
-      8:'⌫', 9:'Tab', 13:'↵', 27:'Esc',
-      32:'Spc', 300:'Spc',   // 32 = ASCII space, 300 = KSC alias
+      // CharaChorder action codes (charaVersion:1 JSON format)
+      32:'Spc', 127:'Del',
+      296:'↵', 297:'Esc', 298:'⌫', 299:'Tab', 300:'Spc',
+      313:'Caps', 330:'Home', 331:'PgUp', 333:'End', 334:'PgDn',
+      335:'→', 336:'←', 337:'↓', 338:'↑',
+      // Modifier keys (action codes 512–519)
+      512:'⌃', 513:'⇧', 514:'⌥', 515:'⊞',
+      516:'⌃', 517:'⇧', 518:'⌥', 519:'⊞',
+      // Chording special actions
+      536:'Dup', 573:'Cap↑', 574:'Join',
     };
     if (sp[code] !== undefined) return sp[code];
     // HID keyboard usage IDs (CharaChorder Serial / old charachorder.io JSON format)
@@ -414,6 +459,9 @@ const CC = (() => {
     if (code >= 33 && code <= 126) return String.fromCharCode(code);
     // Latin-1 Supplement 160–255 maps correctly via String.fromCharCode (ä=228, ü=252…)
     if (code >= 160 && code <= 255) return String.fromCharCode(code);
+    // CharaChorder F-key action codes (314=F1 … 325=F12, 360=F13 … 371=F24)
+    if (code >= 314 && code <= 325) return `F${code - 313}`;
+    if (code >= 360 && code <= 371) return `F${code - 347}`;
     // US-International AltGr combos + device-specific extended codes
     if (CC_CHAR_MAP[code]) return CC_CHAR_MAP[code];
     return `#${code}`;
@@ -793,7 +841,7 @@ const App = (() => {
     $('themeDarkBtn').classList.toggle('active',t==='dark');
     $('themeLightBtn').classList.toggle('active',t==='light');
     const s=Storage.getSettings();s.theme=t;Storage.saveSettings(s);
-    if(document.querySelector('#tab-stats.active')&&wpmChart)renderWpmChart(Storage.getSessions());
+    if(document.querySelector('#tab-stats.active'))renderStats();
   }
 
   /* ============================================================
@@ -949,10 +997,11 @@ const App = (() => {
     if(PS.wrongDetectTimer){clearTimeout(PS.wrongDetectTimer);PS.wrongDetectTimer=null;}
     if(PS.matchTimeout){clearTimeout(PS.matchTimeout);PS.matchTimeout=null;}
     clearHintTimer(PS);
-    // AFK timer: if no activity for 5 s, exclude this attempt from stats
+    // AFK timer: if no activity for afkThresholdSeconds, exclude this attempt from stats
     if(PS.afkTimer){clearTimeout(PS.afkTimer);PS.afkTimer=null;}
     PS.wasAfk=false;
-    PS.afkTimer=setTimeout(()=>{PS.afkTimer=null;PS.wasAfk=true;},5000);
+    const _nextAfkMs=(Storage.getSettings().afkThresholdSeconds??5)*1000;
+    PS.afkTimer=setTimeout(()=>{PS.afkTimer=null;PS.wasAfk=true;},_nextAfkMs);
 
     $('wordDisplay').textContent=w;
     $('wordDisplay').className='word-display';
@@ -972,6 +1021,7 @@ const App = (() => {
     clearHintTimer(PS);
     $('practiceContent').classList.add('hidden');
     $('practiceFinished').classList.remove('hidden');
+    checkBackupReminder();
   }
 
   function onPracticeInput(e){
@@ -985,23 +1035,37 @@ const App = (() => {
        (e.g. CharaChorder outputs "word "). Trim so matching works correctly. */
     const valTrim=val.trimEnd();
 
+    // Guard: if target is merely a prefix of what's typed, cancel any pending match.
+    // Prevents e.g. target="we" being confirmed while user is still choriding "were".
+    if (valTrim.length > target.length) {
+      const startsWith = ci
+        ? valTrim.toLowerCase().startsWith(target.toLowerCase())
+        : valTrim.startsWith(target);
+      if (startsWith) {
+        PS.matchedAt = 0;
+        if (PS.matchTimeout) { clearTimeout(PS.matchTimeout); PS.matchTimeout = null; }
+      }
+    }
+
     // AFK timer: reset on any activity
     if(PS.afkTimer){clearTimeout(PS.afkTimer);PS.afkTimer=null;}
     if(!PS.wasAfk){
-      PS.afkTimer=setTimeout(()=>{PS.afkTimer=null;PS.wasAfk=true;},5000);
+      const afkMs=(settings.afkThresholdSeconds??5)*1000;
+      PS.afkTimer=setTimeout(()=>{PS.afkTimer=null;PS.wasAfk=true;},afkMs);
     }
 
     // Pause detection
+    const _afkMs=(settings.afkThresholdSeconds??5)*1000;
     if(PS.lastActivityAt>0){
       const gap=now-PS.lastActivityAt;
-      if(gap>5000){
-        PS.totalPausedMs+=gap-5000;
-        if(PS.firstKeyAt===null)PS.shownAt+=gap-5000;
+      if(gap>_afkMs){
+        PS.totalPausedMs+=gap-_afkMs;
+        if(PS.firstKeyAt===null)PS.shownAt+=gap-_afkMs;
       }
     } else if(PS.firstKeyAt===null){
       // No activity yet — check gap from when word was shown
       const gap=now-PS.shownAt;
-      if(gap>5000){const excess=gap-5000;PS.totalPausedMs+=excess;PS.shownAt+=excess;}
+      if(gap>_afkMs){const excess=gap-_afkMs;PS.totalPausedMs+=excess;PS.shownAt+=excess;}
     }
     PS.lastActivityAt=now;
 
@@ -1132,6 +1196,8 @@ const App = (() => {
     }else{
       Storage.updateWordStatsOnly(PS.word,{skipped:true});
     }
+    // Focus input immediately so subsequent keypresses don't re-trigger the Skip button
+    $('practiceInput').focus();
     setTimeout(nextPracticeWord,450);
   }
 
@@ -1350,14 +1416,16 @@ const App = (() => {
       // Pause detection
       if(TS.lastActivityAt>0){
         const gap=now-TS.lastActivityAt;
-        if(gap>5000){
-          const excess=gap-5000;
+        const afkMs=(settings.afkThresholdSeconds??5)*1000;
+        if(gap>afkMs){
+          const excess=gap-afkMs;
           TS.wordPausedMs+=excess;TS.totalPausedMs+=excess;
           if(TS.firstKeyAt===null)TS.shownAt+=excess;
         }
       } else if(TS.firstKeyAt===null){
         const gap=now-TS.shownAt;
-        if(gap>5000){const excess=gap-5000;TS.wordPausedMs+=excess;TS.totalPausedMs+=excess;TS.shownAt+=excess;}
+        const afkMs=(settings.afkThresholdSeconds??5)*1000;
+        if(gap>afkMs){const excess=gap-afkMs;TS.wordPausedMs+=excess;TS.totalPausedMs+=excess;TS.shownAt+=excess;}
       }
       if(isFirstKeystroke) TS.firstKeyAt=now;
     }
@@ -1612,7 +1680,9 @@ const App = (() => {
   ============================================================ */
   function renderStats(){
     const all=Storage.getAllWordStats(),sessions=Storage.getSessions();
+    const settings=Storage.getSettings();
     const words=Object.values(all);
+    const threshold=settings.learnedThresholdDays??10;
     $('statsTotalWords').textContent=words.length;
     $('statsTotalSessions').textContent=sessions.length;
     const allCts=words.flatMap(w=>w.chordTimeHistory??[]);
@@ -1621,24 +1691,67 @@ const App = (() => {
     const tc=words.reduce((s,w)=>s+(w.correctFirstTry??0),0);
     $('statsOverallAccuracy').textContent=ta>0?Math.round(tc/ta*100)+'%':'—';
     $('statsTotalPractice').textContent=fmtPracticeTime(Storage.getTotalPracticeMs());
-    renderWpmChart(sessions);renderWordStatsTable();renderSessionHistory(sessions);
+    // Learned words: base interval >= threshold (support legacy `interval` field)
+    const learnedCount = words.filter(w => (w.baseIntervalDays ?? w.interval ?? 0) >= threshold).length;
+    $('statsLearnedWords').textContent=learnedCount;
+    renderLearnedWordsChart(words,threshold);
+    renderWordStatsTable();renderSessionHistory(sessions);
   }
 
-  function renderWpmChart(sessions){
-    const canvas=$('wpmChart');
-    if(!sessions.length){$('noChartMsg').style.display='block';canvas.style.display='none';return;}
-    $('noChartMsg').style.display='none';canvas.style.display='block';
-    const recent=sessions.slice(-40);
-    const labels=recent.map(s=>{const d=new Date(s.date);return`${d.getMonth()+1}/${d.getDate()}`;});
-    const data=recent.map(s=>s.wpm);
+  function renderLearnedWordsChart(words,threshold){
+    const canvas=$('learnedChart');
+    const noMsg=$('noLearnedChartMsg');
+    if(!canvas)return;
+    // Collect learnedAt timestamps; backfill from lastSeen for existing data without learnedAt
+    const timestamps=words
+      .filter(w => (w.baseIntervalDays ?? w.interval ?? 0) >= threshold)
+      .map(w=>w.learnedAt||(w.lastSeen??w.firstSeen??Date.now()))
+      .filter(Boolean)
+      .sort((a,b)=>a-b);
+    if(!timestamps.length){
+      if(noMsg)noMsg.style.display='block';
+      canvas.style.display='none';
+      return;
+    }
+    if(noMsg)noMsg.style.display='none';
+    canvas.style.display='block';
+    // Build cumulative daily data
+    const startDay=new Date(timestamps[0]);
+    startDay.setHours(0,0,0,0);
+    const endDay=new Date();
+    endDay.setHours(23,59,59,999);
+    // Group by calendar day label
+    const dayMap={};
+    for(const ts of timestamps){
+      const d=new Date(ts);d.setHours(0,0,0,0);
+      const key=d.toISOString().slice(0,10);
+      dayMap[key]=(dayMap[key]??0)+1;
+    }
+    // Build sorted cumulative series
+    const keys=Object.keys(dayMap).sort();
+    const labels=[];const data=[];let cum=0;
+    for(const k of keys){cum+=dayMap[k];labels.push(k.slice(5));data.push(cum);}
     const dark=document.documentElement.dataset.theme!=='light';
     const gc=dark?'rgba(255,255,255,.07)':'rgba(0,0,0,.07)';
     const tc=dark?'#8b949e':'#636c76';
     if(wpmChart)wpmChart.destroy();
     wpmChart=new Chart(canvas,{
       type:'line',
-      data:{labels,datasets:[{label:'WPM',data,borderColor:'#58a6ff',backgroundColor:'rgba(88,166,255,.12)',tension:.35,fill:true,pointRadius:3,pointBackgroundColor:'#58a6ff'}]},
-      options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{grid:{color:gc},ticks:{color:tc,maxTicksLimit:10}},y:{grid:{color:gc},ticks:{color:tc},beginAtZero:true}}},
+      data:{labels,datasets:[{
+        label:'Learned words (cumulative)',
+        data,
+        borderColor:'#3fb950',
+        backgroundColor:'rgba(63,185,80,.12)',
+        tension:.35,fill:true,pointRadius:3,pointBackgroundColor:'#3fb950',
+      }]},
+      options:{
+        responsive:true,
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:(i)=>`${i.parsed.y} words learned`}}},
+        scales:{
+          x:{grid:{color:gc},ticks:{color:tc,maxTicksLimit:10}},
+          y:{grid:{color:gc},ticks:{color:tc},beginAtZero:true,title:{display:true,text:'Learned words',color:tc}},
+        },
+      },
     });
   }
 
@@ -1774,7 +1887,26 @@ const App = (() => {
             <div class="wsc-actions">
               <button class="btn ${isActive?'btn-primary':'btn-secondary'} btn-small set-toggle-btn" data-id="${set.id}">${isActive?'\u2713 Active':'Activate'}</button>
               <button class="btn btn-secondary btn-small edit-set-btn" data-id="${set.id}">Edit</button>
+              <button class="btn btn-secondary btn-small split-set-btn" data-id="${set.id}" title="Split into smaller subsets">Split</button>
               <button class="btn btn-danger btn-small delete-set-btn" data-id="${set.id}">Delete</button>
+            </div>
+          </div>
+          <div class="wsc-split hidden">
+            <div class="wsc-split-inner">
+              <div style="font-size:.85rem;color:var(--txt2);margin-bottom:.5rem">Split <strong>${escHtml(set.name)}</strong> (${set.words.length} words) into:</div>
+              <div class="btn-group mode-btns" style="margin-bottom:.5rem">
+                <button class="mode-btn active wsc-split-mode" data-split-mode="bySize">Subsets of N words</button>
+                <button class="mode-btn wsc-split-mode" data-split-mode="byCount">N equal subsets</button>
+              </div>
+              <div class="form-row" style="gap:.5rem;align-items:center">
+                <input type="number" class="wsc-split-n input-small" min="1" max="9999" value="30">
+                <span class="label wsc-split-label">words per subset</span>
+              </div>
+              <div class="wsc-split-preview" style="font-size:.8rem;color:var(--txt2);margin-top:.35rem"></div>
+              <div class="btn-row" style="margin-top:.5rem">
+                <button class="btn btn-primary btn-small do-split-btn">Create subsets</button>
+                <button class="btn btn-secondary btn-small cancel-split-btn">Cancel</button>
+              </div>
             </div>
           </div>
           <div class="wsc-edit">
@@ -1809,8 +1941,21 @@ const App = (() => {
       card.querySelector('.set-toggle-btn')?.addEventListener('click',()=>toggleActiveWordSet(id));
       card.querySelector('.edit-set-btn')?.addEventListener('click',()=>startInlineEdit(card));
       card.querySelector('.delete-set-btn')?.addEventListener('click',()=>deleteWordSet(id));
+      card.querySelector('.split-set-btn')?.addEventListener('click',()=>toggleSplitPanel(card));
       card.querySelector('.cancel-edit-btn')?.addEventListener('click',()=>cancelInlineEdit(card));
       card.querySelector('.save-edit-btn')?.addEventListener('click',()=>saveInlineEdit(card));
+      card.querySelector('.do-split-btn')?.addEventListener('click',()=>executeSplit(card));
+      card.querySelector('.cancel-split-btn')?.addEventListener('click',()=>{
+        card.querySelector('.wsc-split')?.classList.add('hidden');
+      });
+      card.querySelectorAll('.wsc-split-mode').forEach(btn=>btn.addEventListener('click',()=>{
+        card.querySelectorAll('.wsc-split-mode').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        const label=card.querySelector('.wsc-split-label');
+        if(label)label.textContent=btn.dataset.splitMode==='bySize'?'words per subset':'equal subsets';
+        updateSplitPreview(card);
+      }));
+      card.querySelector('.wsc-split-n')?.addEventListener('input',()=>updateSplitPreview(card));
       card.querySelectorAll('.wsc-sep-btns .mode-btn').forEach(btn=>btn.addEventListener('click',()=>{
         card.querySelectorAll('.wsc-sep-btns .mode-btn').forEach(b=>b.classList.remove('active'));
         btn.classList.add('active');
@@ -1844,6 +1989,68 @@ const App = (() => {
         card.classList.remove('drag-over');
       });
     });
+  }
+
+  /* ── Backup reminder ── */
+  function checkBackupReminder(){
+    const s=Storage.getSettings();
+    const days=s.backupReminderDays??7;
+    if(days<=0)return;
+    const last=s.lastBackupPromptAt??0;
+    if(Date.now()-last>=days*86400000){
+      s.lastBackupPromptAt=Date.now();
+      Storage.saveSettings(s);
+      const banner=$('backupReminderBanner');
+      if(banner)banner.classList.remove('hidden');
+    }
+  }
+
+  /* ── Word set split helpers ── */
+  function toggleSplitPanel(card){
+    const panel=card.querySelector('.wsc-split');
+    if(!panel)return;
+    // Close any other open split panels
+    $('wordSetsList').querySelectorAll('.wsc-split:not(.hidden)').forEach(p=>{if(p!==panel)p.classList.add('hidden');});
+    panel.classList.toggle('hidden');
+    updateSplitPreview(card);
+  }
+  function updateSplitPreview(card){
+    const preview=card.querySelector('.wsc-split-preview');
+    if(!preview)return;
+    const id=card.dataset.id;
+    const set=Storage.getWordSets().sets.find(s=>s.id===id);
+    if(!set){preview.textContent='';return;}
+    const n=Math.max(1,parseInt(card.querySelector('.wsc-split-n')?.value)||30);
+    const mode=card.querySelector('.wsc-split-mode.active')?.dataset.splitMode??'bySize';
+    const total=set.words.length;
+    let count,size;
+    if(mode==='bySize'){size=n;count=Math.ceil(total/size);}
+    else{count=n;size=Math.ceil(total/count);}
+    preview.textContent=`→ ${count} subset${count!==1?'s':''} of ~${size} words each`;
+  }
+  function executeSplit(card){
+    const id=card.dataset.id;
+    const data=Storage.getWordSets();
+    const set=data.sets.find(s=>s.id===id);
+    if(!set)return;
+    const n=Math.max(1,parseInt(card.querySelector('.wsc-split-n')?.value)||30);
+    const mode=card.querySelector('.wsc-split-mode.active')?.dataset.splitMode??'bySize';
+    const words=[...set.words];
+    let chunkSize;
+    if(mode==='bySize'){chunkSize=n;}
+    else{chunkSize=Math.ceil(words.length/Math.max(1,n));}
+    const chunks=[];
+    for(let i=0;i<words.length;i+=chunkSize)chunks.push(words.slice(i,i+chunkSize));
+    const total=chunks.length;
+    const newSets=chunks.map((chunk,i)=>({
+      id:uid(),name:`${set.name} (${i+1}/${total})`,words:chunk,sep:'auto',created:Date.now(),
+    }));
+    // Insert new sets right after the original
+    const origIdx=data.sets.findIndex(s=>s.id===id);
+    data.sets.splice(origIdx+1,0,...newSets);
+    Storage.saveWordSets(data);
+    renderWordSets();refreshPracticeHeader();refreshTestHeader();
+    alert(`Created ${total} subsets from "${set.name}". Original set kept.`);
   }
 
   function startInlineEdit(card){
@@ -2015,6 +2222,9 @@ const App = (() => {
     $('settingMaxIntervalDays').value=s.maxIntervalDays??365;
     $('settingEaseFactorDefault').value=s.easeFactorDefault??2.5;
     $('settingCaseInsensitive').checked=s.caseInsensitive;
+    $('settingAfkThreshold').value=s.afkThresholdSeconds??5;
+    $('settingLearnedThreshold').value=s.learnedThresholdDays??10;
+    $('settingBackupReminderDays').value=s.backupReminderDays??7;
     $('themeDarkBtn').classList.toggle('active',s.theme==='dark');
     $('themeLightBtn').classList.toggle('active',s.theme==='light');
     /* Multi-select hint mode: highlight all active modes */
@@ -2036,6 +2246,9 @@ const App = (() => {
     s.maxIntervalDays=parseInt($('settingMaxIntervalDays').value)||365;
     s.easeFactorDefault=parseFloat($('settingEaseFactorDefault').value)||2.5;
     s.caseInsensitive=$('settingCaseInsensitive').checked;
+    s.afkThresholdSeconds=Math.max(1, parseInt($('settingAfkThreshold').value)||5);
+    s.learnedThresholdDays=Math.max(1, parseInt($('settingLearnedThreshold').value)||10);
+    s.backupReminderDays=Math.max(0, parseInt($('settingBackupReminderDays').value)||7);
     Storage.saveSettings(s);
   }
   function setHintMode(mode){
@@ -2189,7 +2402,8 @@ const App = (() => {
     // Settings
     ['settingSlowChordTime','settingAutoAdvanceDelay','settingSkipDelay','settingHintDelay',
      'settingFirstSuccessInterval','settingSecondSuccessInterval',
-     'settingMaxIntervalDays','settingEaseFactorDefault'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
+     'settingMaxIntervalDays','settingEaseFactorDefault',
+     'settingAfkThreshold','settingLearnedThreshold','settingBackupReminderDays'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
     ['settingCaseInsensitive'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
     document.querySelectorAll('#hintModeBtns .mode-btn').forEach(b=>b.addEventListener('click',()=>setHintMode(b.dataset.hint)));
 
@@ -2200,10 +2414,20 @@ const App = (() => {
         alert('Done — all words are now due.');
       }));
     $('bringForwardBtn')?.addEventListener('click',()=>{
-      const days=parseInt($('bringForwardDaysInput')?.value)||1;
-      confirmAction(`Bring all words forward by ${days} day(s)?`,()=>{
-        Storage.bringForwardByDays(days);
-        alert(`Done — all word review intervals shifted forward by ${days} day(s).`);
+      const days=parseInt($('bringForwardDaysInput')?.value)||0;
+      const hours=Math.max(0,parseInt($('bringForwardHoursInput')?.value)||0);
+      const fracDays = days + (hours/24);
+      const label = `${days} day(s)` + (hours?` + ${hours} hour(s)`:'');
+      confirmAction(`Bring all words forward by ${label}?`,()=>{
+        Storage.bringForwardByDays(fracDays);
+        alert(`Done — all due dates shifted forward by ${label}.`);
+      });
+    });
+
+    $('resetBaseIntervalsBtn')?.addEventListener('click',()=>{
+      confirmAction('Reset base intervals for ALL words? This will restart scheduling and clear learned states.',()=>{
+        Storage.resetAllBaseIntervals();
+        alert('Done — all base intervals reset to zero.');
       });
     });
 
@@ -2317,6 +2541,37 @@ const App = (() => {
     refreshPracticeHeader();
     renderQuickSettings(PS.mode);
     refreshTestHeader();
+
+    /* ── Out-of-focus / AFK detection ── */
+    // When the page tab is hidden (user switches tabs) → treat as AFK for current attempt
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden){
+        if(PS.word&&!PS.waiting){PS.wasAfk=true;clearHintTimer(PS);}
+      }
+    });
+    // When the browser window loses focus entirely → treat as AFK
+    window.addEventListener('blur',()=>{
+      if(PS.word&&!PS.waiting){PS.wasAfk=true;clearHintTimer(PS);}
+    });
+    // When practice input loses focus (user clicked somewhere in the page) → treat as AFK
+    $('practiceInput')?.addEventListener('blur',(e)=>{
+      // Except when focus moves to the Skip button (intentional action)
+      if(PS.word&&!PS.waiting&&e.relatedTarget!==$('skipBtn')){
+        PS.wasAfk=true;clearHintTimer(PS);
+      }
+    });
+
+    // Backup reminder banner export button
+    $('backupReminderExportBtn')?.addEventListener('click',()=>{
+      const a=document.createElement('a');
+      a.href='data:application/json,'+encodeURIComponent(Storage.exportData());
+      a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();
+      $('backupReminderBanner')?.classList.add('hidden');
+    });
+    $('backupReminderDismissBtn')?.addEventListener('click',()=>{
+      $('backupReminderBanner')?.classList.add('hidden');
+    });
+
     if(Storage.isFirstVisit())openHelp();
     if('serviceWorker' in navigator){
       const host=window.location.hostname;

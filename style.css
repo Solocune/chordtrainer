@@ -295,3 +295,37 @@ input[type="text"]:focus, input[type="number"]:focus, input[type="search"]:focus
   .data-table th, .data-table td { padding: .4rem .5rem; font-size: .8rem; }
   .modal-body { max-height: 65vh; }
 }
+
+/* ══ DISCLAIMER BOX ══ */
+.disclaimer-box {
+  font-size: .85rem;
+  line-height: 1.5;
+  background: rgba(210,153,34,.12);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+  color: var(--txt);
+}
+
+/* ══ BACKUP REMINDER BANNER ══ */
+.backup-reminder {
+  background: rgba(88,166,255,.1);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+  font-size: .88rem;
+  text-align: center;
+  color: var(--txt);
+}
+
+/* ══ WORD SET SPLIT PANEL ══ */
+.wsc-split {
+  margin-top: .6rem;
+  border-top: 1px solid var(--border);
+  padding-top: .6rem;
+}
+.wsc-split-inner {
+  background: var(--bg3);
+  border-radius: var(--radius);
+  padding: .75rem .9rem;
+}
