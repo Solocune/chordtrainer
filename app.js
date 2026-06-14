@@ -12,6 +12,7 @@ const Storage = (() => {
     WELCOMED:    'ct_welcomed',
     CHORD_MAP:   'ct_chord_map',
     PRACTICE_MS: 'ct_practice_ms',
+    LEARNED_HISTORY: 'ct_learned_history',
   };
 
   const DEFAULTS = {
@@ -33,6 +34,9 @@ const Storage = (() => {
     afkThresholdSeconds:    5,
     learnedThresholdDays:   10,
     backupReminderDays:     7,
+    // Learned chart defaults
+    learnedChartRangeDays:  90,
+    learnedChartAggregation: 'day', // 'day' | 'week' | 'month'
   };
 
   const load = (key, fallback) => {
@@ -65,6 +69,8 @@ const Storage = (() => {
       const now = Date.now();
       const s   = all[word] || api._initStat(word);
       const settings = api.getSettings();
+      const learnedThreshold = settings.learnedThresholdDays ?? 10;
+      const wasLearned = (s.baseIntervalDays ?? s.interval ?? 0) >= learnedThreshold;
       s.lastSeen = now;
       if (result.skipped) {
         s.attempts++; s.skipped = (s.skipped || 0) + 1;
@@ -101,10 +107,11 @@ const Storage = (() => {
         s.due = now + Math.round((s.baseIntervalDays ?? s.interval ?? 0) * 86400 * 1000);
         // For compatibility, keep a rounded integer `interval` too (not used for scheduling).
         s.interval = Math.round(s.baseIntervalDays || 0);
-        // Track when word first reaches the "learned" threshold (based on base interval)
-        const learnedThreshold = settings.learnedThresholdDays ?? 10;
-        if ((s.baseIntervalDays ?? s.interval ?? 0) >= learnedThreshold && !s.learnedAt) {
+        // Determine learned/unlearned transitions (record events)
+        const isLearnedNow = (s.baseIntervalDays ?? s.interval ?? 0) >= learnedThreshold;
+        if (!wasLearned && isLearnedNow) {
           s.learnedAt = now;
+          api.addLearnedHistoryEvent({ word, type: 'learned', ts: now });
         }
       } else {
         // A corrected/hinted answer is not treated as memory success.
@@ -112,6 +119,12 @@ const Storage = (() => {
         s.baseIntervalDays = 0;
         s.interval = 0;
         s.due = now;
+        // If the word was previously learned but now reset, record unlearned event
+        const isLearnedNow = (s.baseIntervalDays ?? s.interval ?? 0) >= learnedThreshold;
+        if (wasLearned && !isLearnedNow) {
+          delete s.learnedAt;
+          api.addLearnedHistoryEvent({ word, type: 'unlearned', ts: now });
+        }
       }
       all[word] = s; save(K.STATS, all);
     },
@@ -140,7 +153,9 @@ const Storage = (() => {
     // Reset the stored base interval for all words (useful to restart scheduling)
     resetAllBaseIntervals() {
       const all = api.getAllWordStats();
-      for (const s of Object.values(all)) {
+      const now = Date.now();
+      for (const [word, s] of Object.entries(all)) {
+        if (s.learnedAt) api.addLearnedHistoryEvent({ word, type: 'unlearned', ts: now });
         s.baseIntervalDays = 0;
         s.repetitions = 0;
         s.interval = 0;
@@ -158,6 +173,16 @@ const Storage = (() => {
       return d;
     },
     saveWordSets: (d) => save(K.SETS, d),
+    /* Learned history (append-only) — stores events {word,type:'learned'|'unlearned',ts} */
+    getLearnedHistory() { return load(K.LEARNED_HISTORY, []); },
+    saveLearnedHistory(arr) { save(K.LEARNED_HISTORY, arr); },
+    addLearnedHistoryEvent(ev){
+      try{
+        const h = api.getLearnedHistory();
+        h.push(ev);
+        save(K.LEARNED_HISTORY, h);
+      }catch(e){console.warn('Failed to append learned history',e);}
+    },
     getActiveWords() {
       const { sets, activeIds = [] } = api.getWordSets();
       const seen = new Set();
@@ -258,10 +283,11 @@ const Storage = (() => {
     },
     exportData() {
       return JSON.stringify({
-        version: '1.4', exportDate: new Date().toISOString(),
+        version: '1.5', exportDate: new Date().toISOString(),
         wordStats: api.getAllWordStats(), wordSets: api.getWordSets(),
         sessions: api.getSessions(), settings: api.getSettings(),
         totalPracticeMs: api.getTotalPracticeMs(),
+        learnedHistory: api.getLearnedHistory(),
       }, null, 2);
     },
     importData(json, options = {}) {
@@ -277,6 +303,8 @@ const Storage = (() => {
         if (mode === 'overwrite') save(K.PRACTICE_MS, importedPracticeMs);
         else if (mode === 'aggregate') save(K.PRACTICE_MS, cur + importedPracticeMs);
       }
+      // Import learned history if present
+      if (d.learnedHistory) save(K.LEARNED_HISTORY, d.learnedHistory);
     },
   };
   return api;
@@ -1699,57 +1727,126 @@ const App = (() => {
   }
 
   function renderLearnedWordsChart(words,threshold){
-    const canvas=$('learnedChart');
-    const noMsg=$('noLearnedChartMsg');
-    if(!canvas)return;
-    // Collect learnedAt timestamps; backfill from lastSeen for existing data without learnedAt
-    const timestamps=words
-      .filter(w => (w.baseIntervalDays ?? w.interval ?? 0) >= threshold)
-      .map(w=>w.learnedAt||(w.lastSeen??w.firstSeen??Date.now()))
-      .filter(Boolean)
-      .sort((a,b)=>a-b);
-    if(!timestamps.length){
-      if(noMsg)noMsg.style.display='block';
-      canvas.style.display='none';
+    const canvas = $('learnedChart');
+    const noMsg = $('noLearnedChartMsg');
+    if (!canvas) return;
+    // Use append-only learned history (migrate existing `learnedAt` values if history is empty)
+    let history = Storage.getLearnedHistory() || [];
+    if ((!history || history.length === 0)) {
+      const allStats = Storage.getAllWordStats();
+      const migr = [];
+      for (const [w, s] of Object.entries(allStats)) {
+        if (s.learnedAt) migr.push({ word: w, type: 'learned', ts: s.learnedAt });
+      }
+      if (migr.length) {
+        for (const ev of migr) Storage.addLearnedHistoryEvent(ev);
+        history = Storage.getLearnedHistory() || [];
+      }
+    }
+    if (!history || history.length === 0) {
+      if (noMsg) noMsg.style.display = 'block';
+      canvas.style.display = 'none';
       return;
     }
-    if(noMsg)noMsg.style.display='none';
-    canvas.style.display='block';
-    // Build cumulative daily data
-    const startDay=new Date(timestamps[0]);
-    startDay.setHours(0,0,0,0);
-    const endDay=new Date();
-    endDay.setHours(23,59,59,999);
-    // Group by calendar day label
-    const dayMap={};
-    for(const ts of timestamps){
-      const d=new Date(ts);d.setHours(0,0,0,0);
-      const key=d.toISOString().slice(0,10);
-      dayMap[key]=(dayMap[key]??0)+1;
+    if (noMsg) noMsg.style.display = 'none';
+    canvas.style.display = 'block';
+
+    // Read compact UI controls (range & aggregation) — fall back to settings
+    const rangeSel = $('learnedChartRange');
+    const aggSel = $('learnedChartAgg');
+    const settings = Storage.getSettings();
+    const rangeVal = rangeSel?.value || (settings.learnedChartRangeDays ? String(settings.learnedChartRangeDays) : '90');
+    const aggVal = aggSel?.value || (settings.learnedChartAggregation || 'day');
+
+    const events = (history || []).slice().sort((a, b) => a.ts - b.ts);
+
+    // Helper: compute bucket key (YYYY-MM-DD) representing start of bucket
+    function bucketKeyForTs(ts, agg) {
+      const d = new Date(ts);
+      d.setHours(0, 0, 0, 0);
+      if (agg === 'day') return d.toISOString().slice(0, 10);
+      if (agg === 'week') {
+        // week starting Sunday
+        const wk = new Date(d);
+        wk.setDate(d.getDate() - d.getDay()); wk.setHours(0, 0, 0, 0);
+        return wk.toISOString().slice(0, 10);
+      }
+      if (agg === 'month') {
+        const m = new Date(d);
+        m.setDate(1); m.setHours(0, 0, 0, 0);
+        return m.toISOString().slice(0, 10);
+      }
+      return d.toISOString().slice(0, 10);
     }
-    // Build sorted cumulative series
-    const keys=Object.keys(dayMap).sort();
-    const labels=[];const data=[];let cum=0;
-    for(const k of keys){cum+=dayMap[k];labels.push(k.slice(5));data.push(cum);}
-    const dark=document.documentElement.dataset.theme!=='light';
-    const gc=dark?'rgba(255,255,255,.07)':'rgba(0,0,0,.07)';
-    const tc=dark?'#8b949e':'#636c76';
-    if(wpmChart)wpmChart.destroy();
-    wpmChart=new Chart(canvas,{
-      type:'line',
-      data:{labels,datasets:[{
-        label:'Learned words (cumulative)',
+
+    // Build bucketed net changes
+    const bucketChanges = {};
+    for (const ev of events) {
+      const key = bucketKeyForTs(ev.ts, aggVal);
+      bucketChanges[key] = (bucketChanges[key] || 0) + ((ev.type === 'learned') ? 1 : -1);
+    }
+
+    // Determine start and end buckets based on selected range
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    let startBucket;
+    if (rangeVal === 'all') {
+      startBucket = bucketKeyForTs(events[0].ts, aggVal);
+    } else {
+      const days = parseInt(rangeVal) || 90;
+      const s = new Date(today);
+      s.setDate(s.getDate() - (days - 1));
+      // align to bucket boundary
+      startBucket = bucketKeyForTs(s.getTime(), aggVal);
+    }
+    const endBucket = bucketKeyForTs(today.getTime(), aggVal);
+
+    // Compute initial cumulative from events before startBucket
+    let cum = 0;
+    for (const ev of events) {
+      const k = bucketKeyForTs(ev.ts, aggVal);
+      if (k < startBucket) cum += (ev.type === 'learned' ? 1 : -1);
+    }
+    if (cum < 0) cum = 0;
+
+    // Iterate buckets from startBucket to endBucket
+    const labels = [];
+    const data = [];
+    let cursor = new Date(startBucket + 'T00:00:00Z');
+    const endDate = new Date(endBucket + 'T00:00:00Z');
+    while (cursor <= endDate) {
+      const key = cursor.toISOString().slice(0, 10);
+      cum += (bucketChanges[key] || 0);
+      if (cum < 0) cum = 0;
+      // Label formatting
+      if (aggVal === 'day') labels.push(key.slice(5));
+      else if (aggVal === 'week') labels.push(key.slice(5));
+      else labels.push(key.slice(0, 7)); // month -> YYYY-MM
+      data.push(cum);
+      // advance cursor by aggregation
+      if (aggVal === 'day') cursor.setDate(cursor.getDate() + 1);
+      else if (aggVal === 'week') cursor.setDate(cursor.getDate() + 7);
+      else cursor.setMonth(cursor.getMonth() + 1);
+    }
+
+    const dark = document.documentElement.dataset.theme !== 'light';
+    const gc = dark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.07)';
+    const tc = dark ? '#8b949e' : '#636c76';
+    if (wpmChart) wpmChart.destroy();
+    wpmChart = new Chart(canvas, {
+      type: 'line',
+      data: { labels, datasets: [{
+        label: 'Learned words (cumulative)',
         data,
-        borderColor:'#3fb950',
-        backgroundColor:'rgba(63,185,80,.12)',
-        tension:.35,fill:true,pointRadius:3,pointBackgroundColor:'#3fb950',
-      }]},
-      options:{
-        responsive:true,
-        plugins:{legend:{display:false},tooltip:{callbacks:{label:(i)=>`${i.parsed.y} words learned`}}},
-        scales:{
-          x:{grid:{color:gc},ticks:{color:tc,maxTicksLimit:10}},
-          y:{grid:{color:gc},ticks:{color:tc},beginAtZero:true,title:{display:true,text:'Learned words',color:tc}},
+        borderColor: '#3fb950',
+        backgroundColor: 'rgba(63,185,80,.12)',
+        tension: .35, fill: true, pointRadius: 3, pointBackgroundColor: '#3fb950',
+      }] },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (i) => `${i.parsed.y} words learned` } } },
+        scales: {
+          x: { grid: { color: gc }, ticks: { color: tc, maxTicksLimit: 10 } },
+          y: { grid: { color: gc }, ticks: { color: tc }, beginAtZero: true, title: { display: true, text: 'Learned words', color: tc } },
         },
       },
     });
@@ -2414,6 +2511,27 @@ const App = (() => {
      'settingFirstSuccessInterval','settingSecondSuccessInterval',
      'settingMaxIntervalDays','settingEaseFactorDefault',
      'settingAfkThreshold','settingLearnedThreshold','settingBackupReminderDays'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
+    // Learned chart controls: initialize from settings and re-render on change
+    const lcRange = $('learnedChartRange');
+    const lcAgg = $('learnedChartAgg');
+    if (lcRange) {
+      const s = Storage.getSettings();
+      const rv = s.learnedChartRangeDays ? String(s.learnedChartRangeDays) : '90';
+      lcRange.value = rv;
+      lcRange.addEventListener('change',()=>{
+        const ss = Storage.getSettings();
+        ss.learnedChartRangeDays = lcRange.value === 'all' ? 'all' : parseInt(lcRange.value)||90;
+        Storage.saveSettings(ss);
+        renderStats();
+      });
+    }
+    if (lcAgg) {
+      const s2 = Storage.getSettings();
+      lcAgg.value = s2.learnedChartAggregation || 'day';
+      lcAgg.addEventListener('change',()=>{
+        const ss = Storage.getSettings(); ss.learnedChartAggregation = lcAgg.value||'day'; Storage.saveSettings(ss); renderStats();
+      });
+    }
     ['settingCaseInsensitive'].forEach(id=>$(id)?.addEventListener('change',saveSettings));
     document.querySelectorAll('#hintModeBtns .mode-btn').forEach(b=>b.addEventListener('click',()=>setHintMode(b.dataset.hint)));
 
@@ -2605,6 +2723,26 @@ const App = (() => {
     });
     $('backupModalClose')?.addEventListener('click',()=>{$('backupReminderModal')?.classList.add('hidden');});
     $('backupModalBackdrop')?.addEventListener('click',()=>{$('backupReminderModal')?.classList.add('hidden');});
+
+    // Changelog modal: fetch a local CHANGELOG.md and render markdown (sanitized)
+    $('changelogBtn')?.addEventListener('click', async ()=>{
+      const modal = $('changelogModal'); if(!modal) return; modal.classList.remove('hidden');
+      const content = $('changelogContent'); if(content) content.innerHTML = '<div style="opacity:.7">Loading…</div>';
+      try{
+        const res = await fetch('CHANGELOG.md');
+        if(!res.ok) throw new Error('Not found');
+        const txt = await res.text();
+        let html;
+        if(window.marked) html = marked.parse(txt);
+        else html = '<pre style="white-space:pre-wrap;margin:0">'+(txt.replace(/&/g,'&amp;').replace(/</g,'&lt;'))+'</pre>';
+        if(window.DOMPurify) html = DOMPurify.sanitize(html);
+        if(content) content.innerHTML = html;
+      }catch(err){
+        if(content) content.textContent = 'Could not load CHANGELOG.md. Ensure the app is served over HTTP.';
+      }
+    });
+    $('changelogClose')?.addEventListener('click',()=>{$('changelogModal')?.classList.add('hidden');});
+    $('changelogBackdrop')?.addEventListener('click',()=>{$('changelogModal')?.classList.add('hidden');});
 
     if(Storage.isFirstVisit())openHelp();
     if('serviceWorker' in navigator){

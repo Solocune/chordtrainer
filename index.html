@@ -8,6 +8,8 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>⌨</text></svg>">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@2.4.0/dist/purify.min.js"></script>
 </head>
 <body>
 
@@ -20,6 +22,7 @@
     </div>
     <div class="header-actions">
       <button id="helpBtn" class="btn btn-secondary btn-small" title="Help &amp; How it works">? Help</button>
+      <button id="changelogBtn" class="btn btn-secondary btn-small" title="Update News">Update News</button>
       <button id="themeToggle" class="icon-btn" title="Toggle theme">☀</button>
     </div>
   </div>
@@ -308,7 +311,24 @@
     <!-- Learned words chart -->
     <div class="chart-section">
       <h3>Learned words over time</h3>
-      <p class="setting-desc" style="margin-bottom:.5rem">Cumulative count of words whose interval reached the learned threshold. Threshold is set in <strong>Settings → General</strong>.</p>
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;flex-wrap:wrap">
+        <p class="setting-desc" style="margin:0">Cumulative count of words whose interval reached the learned threshold. Threshold is set in <strong>Settings → General</strong>.</p>
+        <div style="margin-left:auto;display:flex;gap:.4rem;align-items:center">
+          <label style="font-size:.9rem;color:var(--txt2);margin:0">Range</label>
+          <select id="learnedChartRange" class="input-small">
+            <option value="30">30d</option>
+            <option value="90" selected>90d</option>
+            <option value="365">1y</option>
+            <option value="all">All</option>
+          </select>
+          <label style="font-size:.9rem;color:var(--txt2);margin:0">Group</label>
+          <select id="learnedChartAgg" class="input-small">
+            <option value="day">Day</option>
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+          </select>
+        </div>
+      </div>
       <div class="chart-wrap"><canvas id="learnedChart"></canvas></div>
       <p id="noLearnedChartMsg" style="display:none;color:var(--txt2);text-align:center">No learned words yet — keep practicing!</p>
     </div>
@@ -643,6 +663,24 @@
     </div>
     <div class="modal-footer">
       <button id="helpCloseBtn" class="btn btn-primary">Got it!</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+  UPDATE NEWS MODAL
+  ═══════════════════════════════════════════ -->
+<div id="changelogModal" class="modal-overlay hidden">
+  <div class="modal-backdrop" id="changelogBackdrop"></div>
+  <div class="modal-content" style="max-width:760px;">
+    <div class="modal-header">
+      <h2>Update News</h2>
+      <button id="changelogClose" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:.95rem;overflow:auto;max-height:60vh;border:1px solid var(--border);padding:1rem;border-radius:6px;background:var(--bg3)">
+        <div id="changelogContent" class="markdown-body" style="min-height:4rem">Loading…</div>
+      </div>
     </div>
   </div>
 </div>
