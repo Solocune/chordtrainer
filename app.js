@@ -1995,13 +1995,23 @@ const App = (() => {
   function checkBackupReminder(){
     const s=Storage.getSettings();
     const days=s.backupReminderDays??7;
-    if(days<=0)return;
+    if(days<=0) return;
     const last=s.lastBackupPromptAt??0;
     if(Date.now()-last>=days*86400000){
       s.lastBackupPromptAt=Date.now();
       Storage.saveSettings(s);
       const banner=$('backupReminderBanner');
-      if(banner)banner.classList.remove('hidden');
+      const modal=$('backupReminderModal');
+      const practiceFinishedEl=$('practiceFinished');
+      // If we're currently on the congratulations card, show the inline banner there.
+      if(practiceFinishedEl && !practiceFinishedEl.classList.contains('hidden')){
+        if(banner) banner.classList.remove('hidden');
+        else if(modal) modal.classList.remove('hidden');
+      } else {
+        // Otherwise show a popup modal so the user sees the reminder regardless of tab.
+        if(modal) modal.classList.remove('hidden');
+        else if(banner) banner.classList.remove('hidden');
+      }
     }
   }
 
@@ -2561,16 +2571,40 @@ const App = (() => {
       }
     });
 
-    // Backup reminder banner export button
+    // Backup reminder banner export button: delegate to the Settings export button
     $('backupReminderExportBtn')?.addEventListener('click',()=>{
-      const a=document.createElement('a');
-      a.href='data:application/json,'+encodeURIComponent(Storage.exportData());
-      a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();
+      // Reuse the same export action as the Settings export button to ensure consistent behavior
+      const settingsExport = $('exportDataBtn');
+      if(settingsExport){ settingsExport.click(); }
+      else {
+        const a=document.createElement('a');
+        a.href='data:application/json,'+encodeURIComponent(Storage.exportData());
+        a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+      }
       $('backupReminderBanner')?.classList.add('hidden');
     });
     $('backupReminderDismissBtn')?.addEventListener('click',()=>{
       $('backupReminderBanner')?.classList.add('hidden');
     });
+
+    // Congratulation card export button (always visible on finished card)
+    $('practiceExportBtn')?.addEventListener('click',()=>{
+      const settingsExport = $('exportDataBtn');
+      if(settingsExport) settingsExport.click();
+      else { const a=document.createElement('a'); a.href='data:application/json,'+encodeURIComponent(Storage.exportData()); a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); }
+    });
+
+    // Modal buttons for backup reminder (shown when reminder triggers off the congrats page)
+    $('backupReminderModalExportBtn')?.addEventListener('click',()=>{
+      $('exportDataBtn')?.click();
+      $('backupReminderModal')?.classList.add('hidden');
+    });
+    $('backupReminderModalDismissBtn')?.addEventListener('click',()=>{
+      $('backupReminderModal')?.classList.add('hidden');
+    });
+    $('backupModalClose')?.addEventListener('click',()=>{$('backupReminderModal')?.classList.add('hidden');});
+    $('backupModalBackdrop')?.addEventListener('click',()=>{$('backupReminderModal')?.classList.add('hidden');});
 
     if(Storage.isFirstVisit())openHelp();
     if('serviceWorker' in navigator){

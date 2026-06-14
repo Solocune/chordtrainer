@@ -38,9 +38,27 @@
 
 <main>
 
-<!-- ═══════════════════════════════════════════
-     PRACTICE TAB
-     ═══════════════════════════════════════════ -->
+  <!-- Backup Reminder Modal (appears regardless of page) -->
+  <div id="backupReminderModal" class="modal-overlay hidden">
+    <div class="modal-backdrop" id="backupModalBackdrop"></div>
+    <div class="modal-content" style="max-width:420px;padding:1rem;">
+      <div class="modal-header">
+        <h2>Time for a backup</h2>
+        <button id="backupModalClose" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>It's time to export your progress. Export a JSON backup now to keep your data safe.</p>
+        <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem;">
+          <button id="backupReminderModalExportBtn" class="btn btn-primary btn-small">Export backup</button>
+          <button id="backupReminderModalDismissBtn" class="btn btn-secondary btn-small">Remind me later</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+    <!-- ═══════════════════════════════════════════
+      PRACTICE TAB
+      ═══════════════════════════════════════════ -->
 <section id="tab-practice" class="tab-content active">
   <div class="tab-inner">
     <h2 class="section-title">Practice</h2>
@@ -65,7 +83,9 @@
           <button id="continueTrainingBtn" class="btn btn-primary">Continue Practicing (random)</button>
           <button id="trainSlowestWordsBtn" class="btn btn-secondary">Train Slowest Words</button>
           <button id="goToWordSetsBtn" class="btn btn-secondary">Add More Words</button>
+          <button id="practiceExportBtn" class="btn btn-secondary">Export backup</button>
         </div>
+        <p id="practiceBackupHint" class="text-muted" style="margin-top:.5rem">💾 It's a good time to export your progress — click <strong>Export backup</strong> to save a JSON copy.</p>
         <!-- Backup reminder banner — shown periodically -->
         <div id="backupReminderBanner" class="backup-reminder hidden" style="margin-top:1rem">
           <span>💾 Time for a backup! Export your progress to keep it safe.</span>
