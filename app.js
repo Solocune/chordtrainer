@@ -61,6 +61,8 @@ const Storage = (() => {
         // `interval` is kept for backward-compatibility when migrating old stats.
         baseIntervalDays: 0, interval: 0, easeFactor: api.getSettings().easeFactorDefault ?? 2.5, repetitions: 0,
         due: Date.now(), firstSeen: Date.now(), lastSeen: null,
+        // Per-word history of base interval values at each recorded attempt
+        baseHistory: [],
       };
     },
 
@@ -77,6 +79,8 @@ const Storage = (() => {
         s.repetitions = 0; s.baseIntervalDays = 0;
         const skipDelayMs = Math.max(0, (settings.skipDelayMinutes ?? 5)) * 60 * 1000;
         s.due = now + skipDelayMs;
+        // record base interval history (0 when skipped)
+        s.baseHistory = [...(s.baseHistory || []).slice(-499), { ts: now, baseIntervalDays: s.baseIntervalDays || 0 }];
         all[word] = s; save(K.STATS, all); return;
       }
       s.attempts++;
@@ -107,6 +111,8 @@ const Storage = (() => {
         s.due = now + Math.round((s.baseIntervalDays ?? s.interval ?? 0) * 86400 * 1000);
         // For compatibility, keep a rounded integer `interval` too (not used for scheduling).
         s.interval = Math.round(s.baseIntervalDays || 0);
+        // record base interval history
+        s.baseHistory = [...(s.baseHistory || []).slice(-499), { ts: now, baseIntervalDays: s.baseIntervalDays || 0 }];
         // Determine learned/unlearned transitions (record events)
         const isLearnedNow = (s.baseIntervalDays ?? s.interval ?? 0) >= learnedThreshold;
         if (!wasLearned && isLearnedNow) {
@@ -125,6 +131,8 @@ const Storage = (() => {
           delete s.learnedAt;
           api.addLearnedHistoryEvent({ word, type: 'unlearned', ts: now });
         }
+        // record base interval history for reset (0)
+        s.baseHistory = [...(s.baseHistory || []).slice(-499), { ts: now, baseIntervalDays: 0 }];
       }
       all[word] = s; save(K.STATS, all);
     },
@@ -160,6 +168,8 @@ const Storage = (() => {
         s.repetitions = 0;
         s.interval = 0;
         delete s.learnedAt;
+        // record baseHistory reset event
+        s.baseHistory = [...(s.baseHistory || []).slice(-499), { ts: now, baseIntervalDays: 0 }];
       }
       save(K.STATS, all);
     },
@@ -208,6 +218,8 @@ const Storage = (() => {
       s.lastSeen = Date.now();
       if (result.skipped) {
         s.attempts++; s.skipped = (s.skipped || 0) + 1;
+        // record base interval snapshot
+        s.baseHistory = [...(s.baseHistory || []).slice(-499), { ts: Date.now(), baseIntervalDays: s.baseIntervalDays || 0 }];
         all[word] = s; save(K.STATS, all); return;
       }
       s.attempts++;
@@ -217,6 +229,8 @@ const Storage = (() => {
       }
       if (result.delay     != null) s.delayHistory     = [...(s.delayHistory     || []).slice(-49), result.delay];
       if (result.chordTime != null) s.chordTimeHistory = [...(s.chordTimeHistory || []).slice(-49), result.chordTime];
+      // record base interval snapshot
+      s.baseHistory = [...(s.baseHistory || []).slice(-499), { ts: Date.now(), baseIntervalDays: s.baseIntervalDays || 0 }];
       all[word] = s; save(K.STATS, all);
     },
 
@@ -1273,7 +1287,7 @@ const App = (() => {
     }
     const entry = stored.map[word.toLowerCase()];
     if (!entry) { el.innerHTML = '<span class="cdsp-none">no chord mapped for this word</span>'; return; }
-    const keys = entry.keys?.length ? formatChordKeysForWord(entry.keys, word) : (entry.display ?? '');
+    const keys = CC.getHint(word) ?? (entry.display ?? '');
     if (!keys) { el.innerHTML = '<span class="cdsp-none">chord has no keys</span>'; return; }
     el.innerHTML = `⌨ <span class="cdsp-keys">${escHtml(keys)}</span>`;
   }
@@ -1285,7 +1299,7 @@ const App = (() => {
     if (!stored?.map) { result.innerHTML = '<span style="color:var(--warn)">No chord map loaded.</span>'; return; }
     const entry = stored.map[word.toLowerCase()];
     if (!entry) { result.innerHTML = `<span style="color:var(--txt2)">“${escHtml(word)}” not in chord map.</span>`; return; }
-    const keys = entry.keys?.length ? formatChordKeysForWord(entry.keys, word) : (entry.display ?? '?');
+    const keys = CC.getHint(word) ?? (entry.display ?? '?');
     result.innerHTML = `<div style="margin:.25rem 0"><span class="cdsp-keys" style="font-size:1rem">${escHtml(keys)}</span></div><div style="font-size:.72rem;opacity:.55">Raw codes: ${escHtml(JSON.stringify(entry.keys??[]))}</div>`;
   }
 
@@ -1730,9 +1744,10 @@ const App = (() => {
     const canvas = $('learnedChart');
     const noMsg = $('noLearnedChartMsg');
     if (!canvas) return;
-    // Use append-only learned history (migrate existing `learnedAt` values if history is empty)
-    let history = Storage.getLearnedHistory() || [];
-    if ((!history || history.length === 0)) {
+    // Prefer per-word `baseHistory` to compute learned/unlearned transitions dynamically.
+    // Migrate legacy `learnedAt` values into append-only history if needed.
+    let globalHistory = Storage.getLearnedHistory() || [];
+    if ((!globalHistory || globalHistory.length === 0)) {
       const allStats = Storage.getAllWordStats();
       const migr = [];
       for (const [w, s] of Object.entries(allStats)) {
@@ -1740,10 +1755,33 @@ const App = (() => {
       }
       if (migr.length) {
         for (const ev of migr) Storage.addLearnedHistoryEvent(ev);
-        history = Storage.getLearnedHistory() || [];
+        globalHistory = Storage.getLearnedHistory() || [];
       }
     }
-    if (!history || history.length === 0) {
+
+    // Build events from per-word baseHistory where available
+    const learnedEvents = [];
+    const allStats = Storage.getAllWordStats();
+    for (const [w, s] of Object.entries(allStats)) {
+      if (Array.isArray(s.baseHistory) && s.baseHistory.length) {
+        const h = s.baseHistory.slice().sort((a, b) => a.ts - b.ts);
+        let prevBase = 0;
+        for (const be of h) {
+          const nb = Number(be.baseIntervalDays || 0);
+          if (prevBase < threshold && nb >= threshold) learnedEvents.push({ word: w, type: 'learned', ts: be.ts });
+          if (prevBase >= threshold && nb < threshold) learnedEvents.push({ word: w, type: 'unlearned', ts: be.ts });
+          prevBase = nb;
+        }
+      }
+    }
+    // Append globalHistory events for words without baseHistory (fallback)
+    for (const ev of (globalHistory || [])) {
+      const s = allStats[ev.word];
+      if (s && Array.isArray(s.baseHistory) && s.baseHistory.length) continue;
+      learnedEvents.push(ev);
+    }
+
+    if (!learnedEvents || learnedEvents.length === 0) {
       if (noMsg) noMsg.style.display = 'block';
       canvas.style.display = 'none';
       return;
@@ -1758,7 +1796,8 @@ const App = (() => {
     const rangeVal = rangeSel?.value || (settings.learnedChartRangeDays ? String(settings.learnedChartRangeDays) : '90');
     const aggVal = aggSel?.value || (settings.learnedChartAggregation || 'day');
 
-    const events = (history || []).slice().sort((a, b) => a.ts - b.ts);
+    // sort the computed events by timestamp
+    learnedEvents.sort((a, b) => a.ts - b.ts);
 
     // Helper: compute bucket key (YYYY-MM-DD) representing start of bucket
     function bucketKeyForTs(ts, agg) {
@@ -1781,7 +1820,7 @@ const App = (() => {
 
     // Build bucketed net changes
     const bucketChanges = {};
-    for (const ev of events) {
+    for (const ev of learnedEvents) {
       const key = bucketKeyForTs(ev.ts, aggVal);
       bucketChanges[key] = (bucketChanges[key] || 0) + ((ev.type === 'learned') ? 1 : -1);
     }
@@ -1790,7 +1829,7 @@ const App = (() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     let startBucket;
     if (rangeVal === 'all') {
-      startBucket = bucketKeyForTs(events[0].ts, aggVal);
+      startBucket = bucketKeyForTs(learnedEvents[0].ts, aggVal);
     } else {
       const days = parseInt(rangeVal) || 90;
       const s = new Date(today);
@@ -1802,7 +1841,7 @@ const App = (() => {
 
     // Compute initial cumulative from events before startBucket
     let cum = 0;
-    for (const ev of events) {
+    for (const ev of learnedEvents) {
       const k = bucketKeyForTs(ev.ts, aggVal);
       if (k < startBucket) cum += (ev.type === 'learned' ? 1 : -1);
     }
@@ -2580,10 +2619,27 @@ const App = (() => {
     });
 
     // Export / Import / Reset
+    function downloadText(filename, text, mime='application/json'){
+      try{
+        const blob = new Blob([text], { type: mime+';charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none'; a.href = url; a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url), 1500);
+      }catch(e){
+        // Fallback to data: URI if Blob/URL APIs are unavailable
+        const a = document.createElement('a');
+        a.href = 'data:application/json,' + encodeURIComponent(text);
+        a.download = filename; a.click();
+      }
+    }
+
     $('exportDataBtn').addEventListener('click',()=>{
-      const a=document.createElement('a');
-      a.href='data:application/json,'+encodeURIComponent(Storage.exportData());
-      a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();
+      const filename = `chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;
+      downloadText(filename, Storage.exportData());
     });
     $('importDataBtn').addEventListener('click',()=>$('importFileInput').click());
     $('importFileInput').addEventListener('change',e=>{
@@ -2695,10 +2751,8 @@ const App = (() => {
       const settingsExport = $('exportDataBtn');
       if(settingsExport){ settingsExport.click(); }
       else {
-        const a=document.createElement('a');
-        a.href='data:application/json,'+encodeURIComponent(Storage.exportData());
-        a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;
-        a.click();
+        const filename = `chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`;
+        downloadText(filename, Storage.exportData());
       }
       $('backupReminderBanner')?.classList.add('hidden');
     });
@@ -2710,7 +2764,7 @@ const App = (() => {
     $('practiceExportBtn')?.addEventListener('click',()=>{
       const settingsExport = $('exportDataBtn');
       if(settingsExport) settingsExport.click();
-      else { const a=document.createElement('a'); a.href='data:application/json,'+encodeURIComponent(Storage.exportData()); a.download=`chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); }
+      else { const filename = `chordtrainer-backup-${new Date().toISOString().slice(0,10)}.json`; downloadText(filename, Storage.exportData()); }
     });
 
     // Modal buttons for backup reminder (shown when reminder triggers off the congrats page)
@@ -2724,21 +2778,67 @@ const App = (() => {
     $('backupModalClose')?.addEventListener('click',()=>{$('backupReminderModal')?.classList.add('hidden');});
     $('backupModalBackdrop')?.addEventListener('click',()=>{$('backupReminderModal')?.classList.add('hidden');});
 
-    // Changelog modal: fetch a local CHANGELOG.md and render markdown (sanitized)
+    // Changelog modal: fetch a local CHANGELOG.md (with fallbacks) and render markdown (sanitized)
     $('changelogBtn')?.addEventListener('click', async ()=>{
       const modal = $('changelogModal'); if(!modal) return; modal.classList.remove('hidden');
       const content = $('changelogContent'); if(content) content.innerHTML = '<div style="opacity:.7">Loading…</div>';
-      try{
-        const res = await fetch('CHANGELOG.md');
-        if(!res.ok) throw new Error('Not found');
-        const txt = await res.text();
-        let html;
-        if(window.marked) html = marked.parse(txt);
-        else html = '<pre style="white-space:pre-wrap;margin:0">'+(txt.replace(/&/g,'&amp;').replace(/</g,'&lt;'))+'</pre>';
-        if(window.DOMPurify) html = DOMPurify.sanitize(html);
-        if(content) content.innerHTML = html;
-      }catch(err){
-        if(content) content.textContent = 'Could not load CHANGELOG.md. Ensure the app is served over HTTP.';
+
+      const tryFetchText = async (url) => {
+        try {
+          const res = await fetch(url);
+          if (!res || !res.ok) return null;
+          const txt = await res.text();
+          return { txt, contentType: (res.headers.get('content-type') || '') };
+        } catch (e) { return null; }
+      };
+
+      const escapeHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+      // Candidate paths: try common names and extensions
+      const candidates = ['CHANGELOG.md','CHANGELOG.html','changelog.md','changelog.html','CHANGELOG','changelog','/CHANGELOG.md','/CHANGELOG.html'];
+
+      // If hosted on GitHub Pages, try raw.githubusercontent.com fallbacks (common branches)
+      try {
+        const host = window.location.hostname || '';
+        if (host.endsWith('.github.io')) {
+          const owner = host.split('.')[0];
+          const pathSegs = (window.location.pathname || '').split('/').filter(Boolean);
+          const repoGuess = pathSegs.length ? pathSegs[0] : owner;
+          const branches = ['main','master','gh-pages'];
+          for (const br of branches) {
+            candidates.push(`https://raw.githubusercontent.com/${owner}/${repoGuess}/${br}/CHANGELOG.md`);
+            candidates.push(`https://raw.githubusercontent.com/${owner}/${repoGuess}/${br}/changelog.md`);
+          }
+        }
+      } catch (e) {}
+
+      let loaded = false;
+      for (const url of candidates) {
+        const res = await tryFetchText(url);
+        if (!res) continue;
+        let { txt, contentType } = res;
+        let html = '';
+        // If server returned HTML (likely Jekyll-rendered), try to extract main/article/markdown section
+        if (contentType.includes('text/html') || /<\/html>/i.test(txt)) {
+          try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(txt, 'text/html');
+            const candidate = doc.querySelector('main') || doc.querySelector('article') || doc.querySelector('.markdown-body') || doc.querySelector('#content') || doc.body;
+            html = candidate ? candidate.innerHTML : doc.documentElement.innerHTML;
+          } catch (e) {
+            html = txt; // fallback: treat as HTML
+          }
+        } else {
+          if (window.marked) html = marked.parse(txt);
+          else html = '<pre style="white-space:pre-wrap;margin:0">'+escapeHtml(txt)+'</pre>';
+        }
+        if (window.DOMPurify) html = DOMPurify.sanitize(html);
+        if (content) content.innerHTML = html;
+        loaded = true; break;
+      }
+
+      if (!loaded) {
+        if (content) content.textContent = 'Could not load Update News. On GitHub Pages raw .md files may not be published; try adding a pre-rendered changelog or a raw link in Settings.';
       }
     });
     $('changelogClose')?.addEventListener('click',()=>{$('changelogModal')?.classList.add('hidden');});
