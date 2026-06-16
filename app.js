@@ -1279,6 +1279,12 @@ const App = (() => {
      completely independent of hint settings or timing conditions. */
   function updateChordDisplay(word, elId) {
     const el = $(elId); if (!el) return;
+    // If visual hints are enabled (wrong/delay/always), avoid rendering the
+    // permanent chord display to prevent showing the same hint twice.
+    try {
+      const settings = Storage.getSettings();
+      if (!settings || !isHintActive(settings, 'never')) { el.innerHTML = ''; el.classList.add('hidden'); return; }
+    } catch (e) { /* ignore and proceed to render if settings unavailable */ }
     if (!word) { el.innerHTML = ''; return; }
     const stored = Storage.getChordMap();
     if (!stored?.map) {
